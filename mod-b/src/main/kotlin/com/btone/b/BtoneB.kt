@@ -1,11 +1,11 @@
 package com.btone.b
 
+import com.btone.b.eval.EvalTool
+import com.btone.b.eval.LiveEvalContext
+import com.btone.b.events.EventBus
 import com.btone.b.http.BtoneHttpServer
-import com.btone.b.mcp.McpTool
 import com.btone.b.mcp.McpTransport
 import com.btone.b.mcp.ToolRegistry
-import com.fasterxml.jackson.databind.JsonNode
-import com.fasterxml.jackson.databind.node.ObjectNode
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents
 import net.fabricmc.loader.api.FabricLoader
@@ -18,18 +18,10 @@ class BtoneB : ClientModInitializer {
         val token = Token.generate()
         val transport = McpTransport()
 
-        ToolRegistry.register(object : McpTool {
-            override val name = "echo"
-            override val description = "debug echo"
-            override val inputSchema: ObjectNode =
-                transport.mapper.readTree("""{"type":"object","properties":{"msg":{"type":"string"}}}""") as ObjectNode
-            override fun call(params: JsonNode): JsonNode =
-                transport.mapper.createObjectNode().apply {
-                    putArray("content").addObject()
-                        .put("type", "text")
-                        .put("text", params["msg"]?.asText() ?: "")
-                }
-        })
+        // Event bus is created here so Task 11/12 can wire client lifecycle events into it.
+        val eventBus = EventBus()
+
+        ToolRegistry.register(EvalTool({ LiveEvalContext(eventBus) }))
 
         val server = BtoneHttpServer(
             port = 25590,
