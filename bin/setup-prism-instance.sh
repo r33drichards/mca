@@ -97,11 +97,14 @@ METEOR_SIZE=$(stat -f%z "$METEOR" 2>/dev/null || stat -c%s "$METEOR")
 (( METEOR_SIZE > 1000000 )) || die "Meteor download too small ($METEOR_SIZE bytes); endpoint may have failed"
 log "Downloaded Meteor: $(basename "$METEOR") ($METEOR_SIZE bytes)"
 
-# Baritone: GitHub release (not on Modrinth)
-BARI="$STAGE/baritone-standalone-fabric-1.15.0.jar"
-log "Fetching Baritone standalone 1.15.0..."
+# Baritone: use the API variant (not standalone). The standalone JAR has its
+# baritone.api.* classes obfuscated, so third-party mods that link against
+# baritone.api.BaritoneAPI break at runtime. The API variant preserves all
+# baritone.api.* symbols and is itself a Fabric mod.
+BARI="$STAGE/baritone-api-fabric-1.15.0.jar"
+log "Fetching Baritone API 1.15.0..."
 curl -sfL -o "$BARI" \
-  "https://github.com/cabaletta/baritone/releases/download/v1.15.0/baritone-standalone-fabric-1.15.0.jar" \
+  "https://github.com/cabaletta/baritone/releases/download/v1.15.0/baritone-api-fabric-1.15.0.jar" \
   || die "Baritone download failed"
 
 # ---- 6. Copy mods into instance ----

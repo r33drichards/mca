@@ -12,8 +12,9 @@ Minecraft classloader is reachable from a script.
 - Prism Launcher (or any Fabric-aware launcher) with a 1.21.8 instance.
 - Fabric Loader >= 0.16, Fabric API for 1.21.8, Fabric Language Kotlin.
 - JDK 21 (the repo's Nix flake provides one).
-- Optional: `baritone-standalone-fabric-1.15.0.jar` in `mods/` (required for
-  movement tools — `baritone` is null otherwise).
+- **Required for movement tools:** `baritone-api-fabric-1.15.0.jar` in `mods/`.
+  Use the **API** variant, not standalone — standalone obfuscates `baritone.api.*`
+  classes and integrations break at runtime.
 - Optional: Meteor Client (`MeteorFacade.tryGet()` returns null otherwise).
 
 ## Build
@@ -172,20 +173,37 @@ Heartbeat: `: keepalive` comment every 30s.
 See [`SMOKE.md`](SMOKE.md) for the runbook from a clean checkout to a
 Claude-driven Baritone walk.
 
-## Known limitations
+## Known limitations (verified by 2026-04-18 production smoke test)
 
-- First `eval` call is ~3s (Kotlin scripting host warmup); subsequent calls
+- **Each `eval` triggers a Kotlin compile (~3s, ~50MB Kotlin compiler-embeddable
+  loaded).** First call is the worst; subsequent calls reuse the host but still
+  pay per-source compile cost. Under chunk-load or Baritone init pressure the
+  client thread can starve and the game freezes (audio drops, render thread
+  stops). Suitable for occasional reads/inspection. NOT suitable for tight
+  control loops — use Option C (data-pipe + mcp-v8) for sustained control.
+- **Sync evals block the client thread.** The `eval` tool wraps the entire
+  script body in `MinecraftClient.submit { }.get(timeout_ms)`. Default
+  `timeout_ms = 10000`. If MC is busy, you'll get
+  `eval dispatch failed: TimeoutException`. Bump `timeout_ms` for slow ops or
+  use `async: true`.
+- **`async: true` has a known reflection bug** under the current scripting
+  host — implicit-receiver bind on a worker thread can throw
+  `java.lang.IllegalArgumentException: argument type mismatch`. Sync mode is
+  the only fully working path today.
+- **Production Fabric ships intermediary class names** (e.g. `mc::class.java.name`
+  prints `net.minecraft.class_310`). The curated `BtoneApi` is the supported
+  way to read MC state — its methods are compiled in our mod and Loom-remapped
+  for you. Direct `mc.player.name` from a script does NOT work; only `mc as Any`
+  + `BtoneApi.callYarn(...)` reflection does.
+- **First `eval` call is ~3s** (compiler warmup); subsequent same-source calls
   are sub-100ms.
 - `async: true` evals do not enforce `timeout_ms`. The script must terminate
   itself.
 - No persistent script registry / hot reload. Each `eval` is independent;
   the agent stores its "library" in its own memory or files.
-- No chat buffer or replay — subscribers only see events that arrive after
-  they connect (Option C provides a buffered stream).
-- Meteor integration is reflection-only and depends on the package/class
-  names of a specific Meteor build. If your Meteor version differs, expect
-  `meteor` to still resolve but individual calls inside the facade may
-  return null. Update `meteor/MeteorFacade.kt` to match.
+- Meteor integration is reflection-only and depends on the field/method names
+  of a specific Meteor build. We use the public `name` field; if a future
+  Meteor release renames it, update `meteor/MeteorFacade.kt`.
 - Bearer tokens are per-launch; restart the client and clients must re-read
   `btone-bridge.json`.
 

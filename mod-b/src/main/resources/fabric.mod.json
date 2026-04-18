@@ -11,10 +11,10 @@
     "minecraft": "~1.21.8",
     "java": ">=21",
     "fabric-language-kotlin": ">=1.13.0",
-    "fabric-api": "*"
+    "fabric-api": "*",
+    "baritone": "*"
   },
   "suggests": {
-    "baritone": "*",
     "meteor-client": "*"
   }
 }

@@ -222,7 +222,17 @@ class BtoneApi(private val events: EventBus) {
         fun toggle(name: String) { facade?.let { runCatching { it.toggle(name, null) } } }
     }
 
-    val meteor: MeteorApi = MeteorApi(MeteorFacade.tryGet())
+    // Lazy: Meteor may not have initialized when our mod did. Retry on each access
+    // until we successfully attach, then keep that facade.
+    @Volatile private var cachedMeteor: MeteorApi? = null
+    val meteor: MeteorApi
+        get() {
+            val cached = cachedMeteor
+            if (cached?.present == true) return cached
+            val fresh = MeteorApi(MeteorFacade.tryGet())
+            cachedMeteor = fresh
+            return fresh
+        }
 
     // ----- Events -----------------------------------------------------------
 

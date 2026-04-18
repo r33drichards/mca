@@ -8,18 +8,36 @@ class MeteorFacade private constructor(
         val getAll = modulesClass.getMethod("getAll")
         @Suppress("UNCHECKED_CAST")
         val modules = getAll.invoke(modulesInstance) as Collection<Any>
-        return modules.map { m -> m.javaClass.getMethod("getName").invoke(m) as String }
+        return modules.mapNotNull { m -> nameOf(m) }
+    }
+
+    private fun nameOf(m: Any): String? {
+        // Meteor modules expose `name` as a public field, not a getter.
+        return runCatching { m.javaClass.getField("name").get(m) as? String }.getOrNull()
+            ?: runCatching { m.javaClass.getMethod("getName").invoke(m) as? String }.getOrNull()
     }
 
     fun toggle(name: String, enable: Boolean?) {
         val get = modulesClass.getMethod("get", String::class.java)
         val m = get.invoke(modulesInstance, name) ?: throw IllegalArgumentException("no module $name")
+        val cls = m.javaClass
+        val toggleMethod = findMethod(cls, "toggle")
+            ?: throw IllegalStateException("no toggle() on $name")
         if (enable == null) {
-            m.javaClass.getMethod("toggle").invoke(m)
+            toggleMethod.invoke(m)
         } else {
-            val isActive = m.javaClass.getMethod("isActive").invoke(m) as Boolean
-            if (isActive != enable) m.javaClass.getMethod("toggle").invoke(m)
+            val isActive = (findMethod(cls, "isActive")?.invoke(m) as? Boolean) ?: return
+            if (isActive != enable) toggleMethod.invoke(m)
         }
+    }
+
+    private fun findMethod(cls: Class<*>, name: String): java.lang.reflect.Method? {
+        var c: Class<*>? = cls
+        while (c != null) {
+            try { return c.getDeclaredMethod(name).also { it.isAccessible = true } } catch (_: NoSuchMethodException) {}
+            c = c.superclass
+        }
+        return null
     }
 
     companion object {
