@@ -34,34 +34,50 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Vision handlers — `world.screenshot` and `world.screenshot_panorama`.
+ * Vision handlers — {@code world.screenshot} and {@code world.screenshot_panorama}.
  *
- * <p>All framebuffer access must run on the render thread. Each capture
- * submits a runnable via {@link MinecraftClient#execute(Runnable)} that
- * fills a {@link CompletableFuture}, then the RPC handler awaits.
+ * <h2>Threading model</h2>
  *
- * <p>The screenshot pipeline:
+ * <p>The naive layout — {@code mc.execute(() -> { takeScreenshot(...); future.get(); })} —
+ * deadlocks. {@link ScreenshotRecorder#takeScreenshot} schedules an async GPU
+ * readback whose completion callback ALSO runs on the render thread. If the
+ * outer runnable blocks waiting for the inner future on that same thread, the
+ * callback can never fire.
+ *
+ * <p>The fix: never block on the render thread. The pipeline is split:
+ *
  * <ol>
- *   <li>Optionally override player yaw/pitch (camera follows player rotation
- *       at the next render frame).</li>
- *   <li>Read framebuffer via {@link ScreenshotRecorder#takeScreenshot} —
- *       callback API that hands us a {@link NativeImage}.</li>
- *   <li>Convert NativeImage ARGB pixels to a Java {@link BufferedImage}.</li>
- *   <li>Optional bilinear downscale to requested {@code width}.</li>
- *   <li>Encode to PNG/JPEG bytes via {@link ImageIO}, base64 result.</li>
- *   <li>Compute camera matrices and project entities/blocks/crosshair to
- *       screen using THE OVERRIDE camera so annotations match the image.</li>
- *   <li>Restore the saved yaw/pitch.</li>
+ *   <li>The RPC handler (running on the HTTP server thread, off the render
+ *       thread) creates a {@code respFuture} and submits a runnable via
+ *       {@link MinecraftClient#execute(Runnable)}.</li>
+ *   <li>That runnable saves player rotation/HUD, applies the override,
+ *       computes camera matrices, and calls
+ *       {@code ScreenshotRecorder.takeScreenshot(fb, callback)}. It returns
+ *       immediately.</li>
+ *   <li>The callback (later, on the render thread, possibly next render tick)
+ *       converts the {@link NativeImage} → {@link BufferedImage} → PNG/JPEG
+ *       bytes → base64, builds entity/block/crosshair annotations using the
+ *       OVERRIDE camera matrices that were captured into final-locals BEFORE
+ *       takeScreenshot was called, restores rotation/HUD, and completes
+ *       {@code respFuture}.</li>
+ *   <li>The HTTP thread blocks on {@code respFuture.get(5s)}. This is the
+ *       only blocking call and it is NOT on the render thread, so the
+ *       callback can drain it.</li>
  * </ol>
+ *
+ * <p>Panorama chains N captures sequentially via
+ * {@link CompletableFuture#thenCompose}; only the final aggregated future is
+ * awaited on the HTTP thread.
  */
 public final class VisionHandlers {
     private static final ObjectMapper M = new ObjectMapper();
     private static final long TIMEOUT_MS = 5_000;
-    private static final long PANORAMA_FRAME_MS = 3_000;
+    private static final long PANORAMA_TIMEOUT_MS = 30_000;
     private static final int MAX_ENTITIES = 64;
     private static final int MAX_BLOCKS = 128;
     private static final double ENTITY_RANGE = 64.0;
@@ -87,9 +103,8 @@ public final class VisionHandlers {
                 "minecraft:lever",
         };
         for (String id : explicit) s.add(Identifier.of(id));
-        // Color- and wood-suffix families — just iterate the registry once at
-        // class load (Registries.BLOCK is populated by the time any handler
-        // dispatches; class init is lazy).
+        // Color- and wood-suffix families — iterate the registry once at class
+        // load. Registries.BLOCK is populated long before any handler dispatch.
         String[] suffixes = {"_bed", "_door", "_trapdoor", "_button", "_pressure_plate",
                 "_sign", "_hanging_sign", "_wall_sign", "_wall_hanging_sign"};
         for (Identifier id : Registries.BLOCK.getIds()) {
@@ -104,28 +119,45 @@ public final class VisionHandlers {
     public static void registerAll(RpcRouter r) {
         r.register("world.screenshot", params -> {
             CaptureRequest req = CaptureRequest.of(params);
-            CompletableFuture<ObjectNode> fut = new CompletableFuture<>();
-            MinecraftClient.getInstance().execute(() -> {
-                try { fut.complete(captureSingle(req)); }
-                catch (Throwable t) { fut.completeExceptionally(t); }
-            });
-            return await(fut, TIMEOUT_MS);
+            CompletableFuture<ObjectNode> fut = scheduleCapture(req);
+            return await(fut, TIMEOUT_MS, "capture_timeout");
         });
         r.register("world.screenshot_panorama", params -> {
             CaptureRequest base = CaptureRequest.of(params);
             int angles = clamp(params.path("angles").asInt(4), 1, 16);
             float[][] offsets = panoramaOffsets(angles);
-            ObjectNode root = M.createObjectNode();
-            ArrayNode frames = root.putArray("frames");
+
+            // Resolve base yaw/pitch on the render thread so each frame's
+            // override is computed from a consistent snapshot. We do this via
+            // a small future (no GPU work, so no deadlock risk).
+            CompletableFuture<float[]> seedFut = new CompletableFuture<>();
+            MinecraftClient.getInstance().execute(() -> {
+                PlayerEntity p = MinecraftClient.getInstance().player;
+                float by = (base.yaw != null) ? base.yaw : (p != null ? p.getYaw() : 0f);
+                float bp = (base.pitch != null) ? base.pitch : (p != null ? p.getPitch() : 0f);
+                seedFut.complete(new float[]{by, bp});
+            });
+            float[] seed = await0(seedFut, 1_000, "panorama_seed_timeout");
+
+            // Chain N single-shot captures sequentially.
+            CompletableFuture<ArrayNode> chain = CompletableFuture.completedFuture(M.createArrayNode());
             for (float[] off : offsets) {
-                CaptureRequest each = base.withYawPitchOffset(off[0], off[1]);
-                CompletableFuture<ObjectNode> fut = new CompletableFuture<>();
-                MinecraftClient.getInstance().execute(() -> {
-                    try { fut.complete(captureSingle(each)); }
-                    catch (Throwable t) { fut.completeExceptionally(t); }
+                final float yawAbs = seed[0] + off[0];
+                final float pitchAbs = Float.isNaN(off[1]) ? seed[1] : off[1];
+                chain = chain.thenCompose(arr -> {
+                    CaptureRequest each = base.withAbsolute(yawAbs, pitchAbs);
+                    return scheduleCapture(each).thenApply(frame -> {
+                        // Stamp yaw/pitch onto the frame for caller convenience.
+                        frame.put("yaw", yawAbs);
+                        frame.put("pitch", pitchAbs);
+                        arr.add(frame);
+                        return arr;
+                    });
                 });
-                frames.add(await(fut, PANORAMA_FRAME_MS));
             }
+            ArrayNode frames = await0(chain, PANORAMA_TIMEOUT_MS, "panorama_timeout");
+            ObjectNode root = M.createObjectNode();
+            root.set("frames", frames);
             return root;
         });
     }
@@ -153,114 +185,195 @@ public final class VisionHandlers {
             return r;
         }
 
-        CaptureRequest withYawPitchOffset(float yawOff, float pitchOverride) {
+        CaptureRequest withAbsolute(float yawAbs, float pitchAbs) {
             CaptureRequest c = new CaptureRequest();
             c.width = this.width;
             c.includeHud = this.includeHud;
             c.annotateRange = this.annotateRange;
             c.format = this.format;
-            PlayerEntity p = MinecraftClient.getInstance().player;
-            float baseYaw = (this.yaw != null) ? this.yaw : (p != null ? p.getYaw() : 0f);
-            float basePitch = (this.pitch != null) ? this.pitch : (p != null ? p.getPitch() : 0f);
-            c.yaw = baseYaw + yawOff;
-            c.pitch = Float.isNaN(pitchOverride) ? basePitch : pitchOverride;
+            c.yaw = yawAbs;
+            c.pitch = pitchAbs;
             return c;
         }
     }
 
-    // --- Single-shot capture ------------------------------------------------
+    // --- Async capture pipeline --------------------------------------------
 
-    private static ObjectNode captureSingle(CaptureRequest req) throws Exception {
+    /**
+     * Submits one capture to the render thread. The returned future completes
+     * (off any thread guarantee — typically the render thread inside the
+     * GPU-readback callback) with a fully-populated response node.
+     *
+     * <p>Never blocks the caller. Never blocks the render thread.
+     */
+    private static CompletableFuture<ObjectNode> scheduleCapture(CaptureRequest req) {
+        CompletableFuture<ObjectNode> respFuture = new CompletableFuture<>();
         MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.world == null || mc.player == null) throw new IllegalStateException("no_world");
-        Framebuffer fb = mc.getFramebuffer();
-        if (fb == null) throw new IllegalStateException("no_framebuffer");
-
-        // Save & override player rotation. Camera updates from player yaw/pitch
-        // every render frame, so by the time takeScreenshot's callback fires
-        // (same frame, same call stack) we still have the OLD camera matrices —
-        // we therefore build the projection from the OVERRIDE values directly.
-        float savedYaw = mc.player.getYaw();
-        float savedPitch = mc.player.getPitch();
-        boolean savedHud = mc.options.hudHidden;
-        boolean override = (req.yaw != null) || (req.pitch != null);
-        float useYaw = (req.yaw != null) ? req.yaw : savedYaw;
-        float usePitch = (req.pitch != null) ? req.pitch : savedPitch;
-
-        try {
-            if (override) {
-                mc.player.setYaw(useYaw);
-                mc.player.setPitch(usePitch);
-                mc.player.setHeadYaw(useYaw);
-                mc.player.setBodyYaw(useYaw);
-                // Re-run the camera update so framebuffer matches the new rotation.
-                if (mc.gameRenderer != null && mc.gameRenderer.getCamera() != null) {
-                    mc.gameRenderer.getCamera().update(mc.world, mc.player, false, false, 1.0f);
+        mc.execute(() -> {
+            try {
+                if (mc.world == null || mc.player == null) {
+                    respFuture.completeExceptionally(new IllegalStateException("no_world"));
+                    return;
                 }
+                Framebuffer fb = mc.getFramebuffer();
+                if (fb == null) {
+                    respFuture.completeExceptionally(new IllegalStateException("no_framebuffer"));
+                    return;
+                }
+
+                // Snapshot original state for restoration.
+                final float savedYaw = mc.player.getYaw();
+                final float savedPitch = mc.player.getPitch();
+                final float savedHeadYaw = mc.player.getHeadYaw();
+                final float savedBodyYaw = mc.player.getBodyYaw();
+                final boolean savedHud = mc.options.hudHidden;
+                final boolean override = (req.yaw != null) || (req.pitch != null);
+                final float useYaw = (req.yaw != null) ? req.yaw : savedYaw;
+                final float usePitch = (req.pitch != null) ? req.pitch : savedPitch;
+
+                if (override) {
+                    mc.player.setYaw(useYaw);
+                    mc.player.setPitch(usePitch);
+                    mc.player.setHeadYaw(useYaw);
+                    mc.player.setBodyYaw(useYaw);
+                    if (mc.gameRenderer != null && mc.gameRenderer.getCamera() != null) {
+                        mc.gameRenderer.getCamera().update(mc.world, mc.player, false, false, 1.0f);
+                    }
+                }
+                mc.options.hudHidden = !req.includeHud;
+
+                // Snapshot camera + projection NOW (override has been applied).
+                // The GPU readback callback may fire on a later tick, by which
+                // point we'll have restored rotation — so we must lock these in.
+                final Camera cam = mc.gameRenderer.getCamera();
+                final Vec3d camPosSnapshot = cam.getPos();
+                final Quaternionf invRot = cam.getRotation().conjugate(new Quaternionf());
+                final Matrix4f viewSnapshot = new Matrix4f().rotation(invRot);
+                final float fov = mc.options.getFov().getValue().floatValue();
+                final Matrix4f projSnapshot = mc.gameRenderer.getBasicProjectionMatrix(fov);
+
+                // Build the annotations NOW too, before we restore state and
+                // before the GPU callback fires. The world snapshot at this
+                // point matches what's about to be captured (the render
+                // pipeline is already in flight for the current frame).
+                final ArrayNode entityAnns =
+                        entityAnnotations(mc, camPosSnapshot, viewSnapshot, projSnapshot);
+                final ArrayNode blockAnns =
+                        blockAnnotations(mc, camPosSnapshot, viewSnapshot, projSnapshot, req.annotateRange);
+                final ObjectNode crossAnn = crosshairAnnotation(mc);
+
+                // Schedule the GPU readback. The callback may fire NOW or a
+                // tick later — either way it runs on the render thread.
+                ScreenshotRecorder.takeScreenshot(fb, img -> {
+                    try {
+                        if (img == null) {
+                            respFuture.completeExceptionally(
+                                    new IllegalStateException("null_native_image"));
+                            return;
+                        }
+                        ObjectNode out = encodeAndAssemble(
+                                req, img, useYaw, usePitch, camPosSnapshot,
+                                entityAnns, blockAnns, crossAnn);
+                        respFuture.complete(out);
+                    } catch (Throwable t) {
+                        respFuture.completeExceptionally(t);
+                    }
+                });
+
+                // Restore state immediately. The framebuffer the GPU is
+                // reading from is already locked; subsequent player updates
+                // do not affect the in-flight capture.
+                mc.options.hudHidden = savedHud;
+                if (override) {
+                    mc.player.setYaw(savedYaw);
+                    mc.player.setPitch(savedPitch);
+                    mc.player.setHeadYaw(savedHeadYaw);
+                    mc.player.setBodyYaw(savedBodyYaw);
+                }
+            } catch (Throwable t) {
+                respFuture.completeExceptionally(t);
             }
-            mc.options.hudHidden = !req.includeHud;
+        });
+        return respFuture;
+    }
 
-            // Capture pixels. takeScreenshot is callback-style; the callback
-            // runs synchronously inside copyTextureToBuffer's completion.
-            NativeImage[] holder = new NativeImage[1];
-            ScreenshotRecorder.takeScreenshot(fb, img -> holder[0] = img);
-            if (holder[0] == null) throw new IllegalStateException("framebuffer_capture_failed");
-
-            int srcW, srcH;
-            BufferedImage buf;
-            try (NativeImage ni = holder[0]) {
-                srcW = ni.getWidth();
-                srcH = ni.getHeight();
-                buf = nativeToBuffered(ni);
-            }
-
-            int outW = (req.width != null && req.width > 0)
-                    ? Math.min(req.width, srcW)
-                    : srcW;
-            int outH = (int) Math.round((double) outW * srcH / srcW);
-            BufferedImage finalImg = (outW == srcW && outH == srcH)
-                    ? buf : downscale(buf, outW, outH);
-
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            ImageIO.write(finalImg, req.format.equals("jpeg") ? "jpeg" : "png", baos);
-            String base64 = java.util.Base64.getEncoder().encodeToString(baos.toByteArray());
-
-            // Build response.
-            ObjectNode out = M.createObjectNode();
-            out.put("image", base64);
-            out.put("format", req.format);
-            out.put("width", outW);
-            out.put("height", outH);
-            out.put("captured_at", System.currentTimeMillis());
-            Camera cam = mc.gameRenderer.getCamera();
-            ObjectNode camNode = out.putObject("camera");
-            camNode.put("yaw", useYaw);
-            camNode.put("pitch", usePitch);
-            ObjectNode camPos = camNode.putObject("pos");
-            Vec3d cp = cam.getPos();
-            camPos.put("x", cp.x); camPos.put("y", cp.y); camPos.put("z", cp.z);
-
-            // Annotations using the OVERRIDE camera matrices.
-            float fov = mc.options.getFov().getValue().floatValue();
-            Matrix4f projection = mc.gameRenderer.getBasicProjectionMatrix(fov);
-            // View = inverse-rotation around camera.
-            Quaternionf invRot = cam.getRotation().conjugate(new Quaternionf());
-            Matrix4f view = new Matrix4f().rotation(invRot);
-            ObjectNode anns = out.putObject("annotations");
-            anns.set("entities", entityAnnotations(mc, cam, view, projection, outW, outH));
-            anns.set("blocks", blockAnnotations(mc, cam, view, projection, outW, outH, req.annotateRange));
-            anns.set("lookingAt", crosshairAnnotation(mc));
-
-            return out;
-        } finally {
-            mc.options.hudHidden = savedHud;
-            if (override && mc.player != null) {
-                mc.player.setYaw(savedYaw);
-                mc.player.setPitch(savedPitch);
-                mc.player.setHeadYaw(savedYaw);
-                mc.player.setBodyYaw(savedYaw);
-            }
+    /** Image conversion + base64 + envelope. Runs inside the GPU-readback callback. */
+    private static ObjectNode encodeAndAssemble(CaptureRequest req,
+                                                NativeImage img,
+                                                float useYaw,
+                                                float usePitch,
+                                                Vec3d camPos,
+                                                ArrayNode entityAnns,
+                                                ArrayNode blockAnns,
+                                                ObjectNode crossAnn) throws Exception {
+        int srcW, srcH;
+        BufferedImage buf;
+        try (NativeImage ni = img) {
+            srcW = ni.getWidth();
+            srcH = ni.getHeight();
+            buf = nativeToBuffered(ni);
         }
+
+        int outW = (req.width != null && req.width > 0) ? Math.min(req.width, srcW) : srcW;
+        int outH = (int) Math.round((double) outW * srcH / srcW);
+        BufferedImage finalImg = (outW == srcW && outH == srcH) ? buf : downscale(buf, outW, outH);
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageIO.write(finalImg, req.format.equals("jpeg") ? "jpeg" : "png", baos);
+        String base64 = java.util.Base64.getEncoder().encodeToString(baos.toByteArray());
+
+        ObjectNode out = M.createObjectNode();
+        out.put("image", base64);
+        out.put("format", req.format);
+        out.put("width", outW);
+        out.put("height", outH);
+        out.put("captured_at", System.currentTimeMillis());
+        ObjectNode camNode = out.putObject("camera");
+        camNode.put("yaw", useYaw);
+        camNode.put("pitch", usePitch);
+        ObjectNode camPosNode = camNode.putObject("pos");
+        camPosNode.put("x", camPos.x);
+        camPosNode.put("y", camPos.y);
+        camPosNode.put("z", camPos.z);
+
+        // Annotations were computed in normalized [0..1] coords (origin
+        // top-left). Now that we know the final output image dims, scale to
+        // pixel space so the agent gets concrete x/y/w/h matching .image.
+        ObjectNode anns = out.putObject("annotations");
+        anns.set("entities", scaleEntityAnns(entityAnns, outW, outH));
+        anns.set("blocks", scaleBlockAnns(blockAnns, outW, outH));
+        anns.set("lookingAt", crossAnn);
+        return out;
+    }
+
+    private static ArrayNode scaleEntityAnns(ArrayNode src, int w, int h) {
+        ArrayNode out = M.createArrayNode();
+        for (JsonNode n : src) {
+            ObjectNode o = (ObjectNode) n.deepCopy();
+            ObjectNode s = (ObjectNode) o.get("screen");
+            double x = s.get("x").asDouble() * w;
+            double y = s.get("y").asDouble() * h;
+            double sw = s.get("w").asDouble() * w;
+            double sh = s.get("h").asDouble() * h;
+            s.put("x", x); s.put("y", y); s.put("w", sw); s.put("h", sh);
+            s.remove("normalized");
+            out.add(o);
+        }
+        return out;
+    }
+
+    private static ArrayNode scaleBlockAnns(ArrayNode src, int w, int h) {
+        ArrayNode out = M.createArrayNode();
+        for (JsonNode n : src) {
+            ObjectNode o = (ObjectNode) n.deepCopy();
+            ObjectNode s = (ObjectNode) o.get("screen");
+            double x = s.get("x").asDouble() * w;
+            double y = s.get("y").asDouble() * h;
+            s.put("x", x); s.put("y", y);
+            s.remove("normalized");
+            out.add(o);
+        }
+        return out;
     }
 
     // --- Image helpers ------------------------------------------------------
@@ -268,8 +381,6 @@ public final class VisionHandlers {
     private static BufferedImage nativeToBuffered(NativeImage ni) {
         int w = ni.getWidth(), h = ni.getHeight();
         BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-        // copyPixelsArgb returns a flat array with origin top-left in the
-        // NativeImage's coordinate system, which matches our needs.
         int[] pixels = ni.copyPixelsArgb();
         out.setRGB(0, 0, w, h, pixels, 0, w);
         return out;
@@ -292,14 +403,16 @@ public final class VisionHandlers {
 
     // --- Projection ---------------------------------------------------------
 
-    /** Returns (screenX, screenY) or null if the world point is offscreen / behind. */
-    private static float[] project(Vec3d worldPos, Camera cam, Matrix4f view, Matrix4f proj,
-                                   int imageW, int imageH) {
-        Vec3d cp = cam.getPos();
+    /**
+     * Project a world point into normalized [0..1] screen coordinates (origin
+     * top-left). Returns {@code null} if behind camera or off-screen. The
+     * caller multiplies by whatever pixel resolution it eventually emits.
+     */
+    private static float[] projectNorm(Vec3d worldPos, Vec3d camPos, Matrix4f view, Matrix4f proj) {
         Vector4f v = new Vector4f(
-                (float) (worldPos.x - cp.x),
-                (float) (worldPos.y - cp.y),
-                (float) (worldPos.z - cp.z),
+                (float) (worldPos.x - camPos.x),
+                (float) (worldPos.y - camPos.y),
+                (float) (worldPos.z - camPos.z),
                 1.0f);
         view.transform(v);
         proj.transform(v);
@@ -307,50 +420,46 @@ public final class VisionHandlers {
         float ndcX = v.x / v.w;
         float ndcY = v.y / v.w;
         if (ndcX < -1f || ndcX > 1f || ndcY < -1f || ndcY > 1f) return null;
-        float sx = (ndcX * 0.5f + 0.5f) * imageW;
-        float sy = (1f - (ndcY * 0.5f + 0.5f)) * imageH;
-        return new float[]{sx, sy};
+        float u = ndcX * 0.5f + 0.5f;
+        float vY = 1f - (ndcY * 0.5f + 0.5f);
+        return new float[]{u, vY};
     }
 
-    // --- Annotation builders ------------------------------------------------
+    // --- Annotation builders (project to NORMALIZED [0..1] coords) ---------
 
-    private static ArrayNode entityAnnotations(MinecraftClient mc, Camera cam, Matrix4f view,
-                                               Matrix4f proj, int w, int h) {
+    private static ArrayNode entityAnnotations(MinecraftClient mc, Vec3d camPos,
+                                               Matrix4f view, Matrix4f proj) {
         ArrayNode arr = M.createArrayNode();
         if (mc.world == null) return arr;
-        Vec3d cp = cam.getPos();
-        record Hit(Entity e, float[] center, float minX, float minY, float maxX, float maxY, double dist) {}
+        record Hit(Entity e, float[] center, float minU, float minV, float maxU, float maxV, double dist) {}
         List<Hit> hits = new ArrayList<>();
         for (Entity e : mc.world.getEntities()) {
             if (e == null || e == mc.player || !e.isAlive() || e.isRemoved()) continue;
-            double dist = e.getPos().distanceTo(cp);
+            double dist = e.getPos().distanceTo(camPos);
             if (dist > ENTITY_RANGE) continue;
             Vec3d center = e.getPos().add(0, e.getBoundingBox().getLengthY() * 0.5, 0);
-            float[] c = project(center, cam, view, proj, w, h);
+            float[] c = projectNorm(center, camPos, view, proj);
             if (c == null) continue;
-            // Project all 8 bbox corners to compute screen AABB.
             Box bb = e.getBoundingBox();
-            float minX = Float.POSITIVE_INFINITY, minY = Float.POSITIVE_INFINITY;
-            float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
+            float minU = Float.POSITIVE_INFINITY, minV = Float.POSITIVE_INFINITY;
+            float maxU = Float.NEGATIVE_INFINITY, maxV = Float.NEGATIVE_INFINITY;
             int seen = 0;
             for (int i = 0; i < 8; i++) {
                 double cx = ((i & 1) == 0) ? bb.minX : bb.maxX;
                 double cy = ((i & 2) == 0) ? bb.minY : bb.maxY;
                 double cz = ((i & 4) == 0) ? bb.minZ : bb.maxZ;
-                float[] p = project(new Vec3d(cx, cy, cz), cam, view, proj, w, h);
+                float[] p = projectNorm(new Vec3d(cx, cy, cz), camPos, view, proj);
                 if (p == null) continue;
                 seen++;
-                if (p[0] < minX) minX = p[0];
-                if (p[1] < minY) minY = p[1];
-                if (p[0] > maxX) maxX = p[0];
-                if (p[1] > maxY) maxY = p[1];
+                if (p[0] < minU) minU = p[0];
+                if (p[1] < minV) minV = p[1];
+                if (p[0] > maxU) maxU = p[0];
+                if (p[1] > maxV) maxV = p[1];
             }
             if (seen == 0) {
-                // Fallback to a 1px box at the center if no corner was visible
-                // but the center projected.
-                minX = c[0]; maxX = c[0]; minY = c[1]; maxY = c[1];
+                minU = c[0]; maxU = c[0]; minV = c[1]; maxV = c[1];
             }
-            hits.add(new Hit(e, c, minX, minY, maxX, maxY, dist));
+            hits.add(new Hit(e, c, minU, minV, maxU, maxV, dist));
         }
         hits.sort(Comparator.comparingDouble(Hit::dist));
         int n = Math.min(hits.size(), MAX_ENTITIES);
@@ -362,10 +471,12 @@ public final class VisionHandlers {
             o.put("name", hit.e.getName().getString());
             o.put("distance", hit.dist);
             ObjectNode screen = o.putObject("screen");
-            screen.put("x", hit.minX);
-            screen.put("y", hit.minY);
-            screen.put("w", hit.maxX - hit.minX);
-            screen.put("h", hit.maxY - hit.minY);
+            // Normalized [0..1] coords. Caller multiplies by image width/height.
+            screen.put("x", hit.minU);
+            screen.put("y", hit.minV);
+            screen.put("w", hit.maxU - hit.minU);
+            screen.put("h", hit.maxV - hit.minV);
+            screen.put("normalized", true);
             ObjectNode world = o.putObject("world");
             Vec3d ep = hit.e.getPos();
             world.put("x", ep.x); world.put("y", ep.y); world.put("z", ep.z);
@@ -373,11 +484,10 @@ public final class VisionHandlers {
         return arr;
     }
 
-    private static ArrayNode blockAnnotations(MinecraftClient mc, Camera cam, Matrix4f view,
-                                              Matrix4f proj, int w, int h, int range) {
+    private static ArrayNode blockAnnotations(MinecraftClient mc, Vec3d camPos, Matrix4f view,
+                                              Matrix4f proj, int range) {
         ArrayNode arr = M.createArrayNode();
         if (mc.world == null || mc.player == null) return arr;
-        Vec3d cp = cam.getPos();
         BlockPos origin = mc.player.getBlockPos();
         record Hit(Identifier id, BlockPos pos, float[] screen, double dist) {}
         List<Hit> hits = new ArrayList<>();
@@ -390,9 +500,9 @@ public final class VisionHandlers {
                     Identifier id = Registries.BLOCK.getId(state.getBlock());
                     if (!INTERACTIVE_BLOCKS.contains(id)) continue;
                     Vec3d center = new Vec3d(bp.getX() + 0.5, bp.getY() + 0.5, bp.getZ() + 0.5);
-                    float[] s = project(center, cam, view, proj, w, h);
+                    float[] s = projectNorm(center, camPos, view, proj);
                     if (s == null) continue;
-                    double dist = center.distanceTo(cp);
+                    double dist = center.distanceTo(camPos);
                     hits.add(new Hit(id, bp, s, dist));
                 }
             }
@@ -407,6 +517,7 @@ public final class VisionHandlers {
             ObjectNode screen = o.putObject("screen");
             screen.put("x", hit.screen[0]);
             screen.put("y", hit.screen[1]);
+            screen.put("normalized", true);
             ObjectNode world = o.putObject("world");
             world.put("x", hit.pos.getX());
             world.put("y", hit.pos.getY());
@@ -475,12 +586,16 @@ public final class VisionHandlers {
 
     // --- Misc ---------------------------------------------------------------
 
-    private static ObjectNode await(CompletableFuture<ObjectNode> fut, long timeoutMs) throws Exception {
+    private static ObjectNode await(CompletableFuture<ObjectNode> fut, long timeoutMs, String onTimeout) throws Exception {
+        return await0(fut, timeoutMs, onTimeout);
+    }
+
+    private static <T> T await0(CompletableFuture<T> fut, long timeoutMs, String onTimeout) throws Exception {
         try {
             return fut.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException te) {
-            throw new RuntimeException("capture_timeout");
-        } catch (java.util.concurrent.ExecutionException ee) {
+            throw new RuntimeException(onTimeout);
+        } catch (ExecutionException ee) {
             Throwable c = ee.getCause();
             if (c instanceof Exception ex) throw ex;
             throw new RuntimeException(c != null ? c : ee);
