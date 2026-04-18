@@ -7,3 +7,6 @@ run/
 node_modules/
 .btone/
 .direnv/
+.env
+.env.*
+*.log
