@@ -6,6 +6,7 @@ import com.btone.c.events.SseEndpoint;
 import com.btone.c.handlers.BaritoneHandlers;
 import com.btone.c.handlers.ChatHandlers;
 import com.btone.c.handlers.ContainerHandlers;
+import com.btone.c.handlers.MeteorHandlers;
 import com.btone.c.handlers.PlayerHandlers;
 import com.btone.c.handlers.WorldReadHandlers;
 import com.btone.c.handlers.WorldWriteHandlers;
@@ -54,6 +55,19 @@ public final class BtoneC implements ClientModInitializer {
             WorldWriteHandlers.registerAll(router);
             ContainerHandlers.registerAll(router);
             BaritoneHandlers.registerAll(router);
+
+            // Optional Meteor surface -- reflection-loaded if Meteor is present.
+            // Per the lessons from mod-b: probe with Class.forName at registration
+            // time so we know whether to install the routes; the facade itself
+            // re-resolves on every call (Meteor may not finish initializing
+            // until well after our onInitializeClient runs).
+            try {
+                Class.forName("meteordevelopment.meteorclient.systems.modules.Modules");
+                MeteorHandlers.registerAll(router);
+                LOG.info("meteor integration enabled");
+            } catch (ClassNotFoundException cnfe) {
+                LOG.info("meteor not present; meteor.* handlers disabled");
+            }
 
             Map<String, Consumer<HttpExchange>> routes = new LinkedHashMap<>();
             routes.put("/health", ex -> BtoneHttpServer.write(ex, 200, "{\"ok\":true}"));
