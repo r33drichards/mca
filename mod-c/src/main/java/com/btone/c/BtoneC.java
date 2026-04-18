@@ -1,5 +1,8 @@
 package com.btone.c;
 
+import com.btone.c.events.EventBus;
+import com.btone.c.events.GameEvents;
+import com.btone.c.events.SseEndpoint;
 import com.btone.c.handlers.BaritoneHandlers;
 import com.btone.c.handlers.ChatHandlers;
 import com.btone.c.handlers.ContainerHandlers;
@@ -32,6 +35,9 @@ public final class BtoneC implements ClientModInitializer {
     public void onInitializeClient() {
         try {
             String token = Token.generate();
+
+            EventBus eventBus = new EventBus();
+            SseEndpoint sse = new SseEndpoint(eventBus);
 
             RpcRouter router = new RpcRouter();
             router.register("debug.echo", params -> params);
@@ -67,9 +73,12 @@ public final class BtoneC implements ClientModInitializer {
                                     + safe(e.getMessage()) + "\"}}");
                 }
             });
+            routes.put("/events", sse::handle);
 
             BtoneHttpServer server = new BtoneHttpServer(25591, token, routes);
             server.start();
+
+            GameEvents.register(eventBus);
 
             ClientLifecycleEvents.CLIENT_STOPPING.register(c -> {
                 LOG.info("btone-mod-c stopping, closing http server");
