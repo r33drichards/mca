@@ -6,3 +6,4 @@ run/
 .DS_Store
 node_modules/
 .btone/
+.direnv/
