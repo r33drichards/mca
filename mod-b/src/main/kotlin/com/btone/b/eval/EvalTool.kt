@@ -13,9 +13,9 @@ class EvalTool(
 ) : McpTool {
     override val name = "eval"
     override val description = "Compile and run Kotlin in the Minecraft client JVM. " +
-        "Implicit receiver: mc, baritone, meteor, events, registerCleanup. " +
+        "Implicit receivers: api (BtoneApi), events (EventBus), registerCleanup. " +
         "Return value of last expression (if JSON-serializable) appears in result.value. " +
-        "If async:true, MC access must be wrapped in mc.execute { ... } by the script."
+        "If async:true, MC access must be wrapped via api.* (which dispatches to the client thread)."
 
     override val inputSchema: ObjectNode = mapper.readTree(
         """

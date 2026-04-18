@@ -1,5 +1,6 @@
 package com.btone.b
 
+import com.btone.b.api.BtoneApi
 import com.btone.b.eval.EvalStatusTool
 import com.btone.b.eval.EvalTool
 import com.btone.b.eval.LiveEvalContext
@@ -24,8 +25,9 @@ class BtoneB : ClientModInitializer {
         // Event bus is created here so Task 11/12 can wire client lifecycle events into it.
         val eventBus = EventBus()
         val sse = SseEndpoint(eventBus)
+        val api = BtoneApi(eventBus)
 
-        ToolRegistry.register(EvalTool({ LiveEvalContext(eventBus) }))
+        ToolRegistry.register(EvalTool({ LiveEvalContext(eventBus, api) }))
         ToolRegistry.register(EvalStatusTool())
 
         val server = BtoneHttpServer(

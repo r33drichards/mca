@@ -1,5 +1,6 @@
 package com.btone.b.eval
 
+import com.btone.b.api.BtoneApi
 import com.btone.b.events.EventBus
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -8,13 +9,11 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class EvalHostTest {
-    // The fake context deliberately throws on `mc` access — tests here must not reference `mc`.
-    // If a future test needs `mc`, it belongs in an integration harness with a real MinecraftClient.
+    // The fake context deliberately throws on `api` access — tests here must not reference `api`.
+    // If a future test needs `api`, it belongs in an integration harness with a real
+    // MinecraftClient on the client thread.
     private val fakeCtx = object : EvalContext() {
-        override val mc: net.minecraft.client.MinecraftClient
-            get() = error("not in test")
-        override val baritone: baritone.api.IBaritone? = null
-        override val meteor: com.btone.b.meteor.MeteorFacade? = null
+        override val api: BtoneApi get() = error("api not used in test")
         override val events: EventBus = EventBus()
         override fun registerCleanup(fn: () -> Unit) {}
     }

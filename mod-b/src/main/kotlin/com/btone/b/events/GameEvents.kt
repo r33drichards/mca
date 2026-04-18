@@ -9,7 +9,9 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 object GameEvents {
     fun register(bus: EventBus) {
         ClientReceiveMessageEvents.GAME.register { msg, _ ->
-            bus.emit("chat", mapOf("text" to msg.string))
+            val text = msg.string
+            com.btone.b.api.BtoneApi.recordChat(text)
+            bus.emit("chat", mapOf("text" to text))
         }
         ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
             bus.emit("joined")

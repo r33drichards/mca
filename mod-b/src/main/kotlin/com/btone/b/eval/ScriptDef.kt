@@ -4,7 +4,7 @@ import kotlin.script.experimental.annotations.KotlinScript
 import kotlin.script.experimental.api.ScriptCompilationConfiguration
 import kotlin.script.experimental.api.defaultImports
 import kotlin.script.experimental.api.implicitReceivers
-import kotlin.script.experimental.jvm.dependenciesFromCurrentContext
+import kotlin.script.experimental.jvm.dependenciesFromClassloader
 import kotlin.script.experimental.jvm.jvm
 
 // Note (deviation from plan): BtoneScript has no constructor arg. Implicit receivers are supplied
@@ -21,12 +21,16 @@ abstract class BtoneScript
 object BtoneScriptCompilation : ScriptCompilationConfiguration({
     implicitReceivers(EvalContext::class)
     jvm {
-        dependenciesFromCurrentContext(wholeClasspath = true)
+        // Use the mod's own classloader (Fabric's Knot). dependenciesFromCurrentContext
+        // resolves to the thread's context loader, which under Fabric is the system loader
+        // and doesn't see Minecraft or Baritone classes.
+        dependenciesFromClassloader(
+            classLoader = BtoneScript::class.java.classLoader!!,
+            wholeClasspath = true,
+        )
     }
     defaultImports(
-        "net.minecraft.client.MinecraftClient",
-        "baritone.api.BaritoneAPI",
-        "baritone.api.pathing.goals.*",
-        "net.minecraft.util.math.BlockPos",
+        "com.btone.b.api.BtoneApi",
+        "com.btone.b.events.EventBus",
     )
 })
