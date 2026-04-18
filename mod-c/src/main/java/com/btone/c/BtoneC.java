@@ -96,6 +96,19 @@ public final class BtoneC implements ClientModInitializer {
 
             GameEvents.register(eventBus);
 
+            // Disable vanilla auto-pause when the MC window loses focus.
+            // The Bot is meant to run in the background while the agent drives it
+            // via RPC; the auto-pause Game Menu was popping up after every alt-tab
+            // and after some agent-driven screen interactions.
+            ClientLifecycleEvents.CLIENT_STARTED.register(c -> {
+                try {
+                    c.options.pauseOnLostFocus = false;
+                    LOG.info("btone-mod-c: pauseOnLostFocus disabled");
+                } catch (Throwable t) {
+                    LOG.warn("btone-mod-c: could not disable pauseOnLostFocus", t);
+                }
+            });
+
             ClientLifecycleEvents.CLIENT_STOPPING.register(c -> {
                 LOG.info("btone-mod-c stopping, closing http server");
                 server.stop();

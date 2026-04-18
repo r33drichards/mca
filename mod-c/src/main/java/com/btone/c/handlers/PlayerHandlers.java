@@ -20,6 +20,24 @@ public final class PlayerHandlers {
         r.register("player.state", state());
         r.register("player.inventory", inventory());
         r.register("player.equipped", equipped());
+        r.register("player.respawn", respawn());
+    }
+
+    private static RpcHandler respawn() {
+        return params -> ClientThread.call(TIMEOUT_MS, () -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            ObjectNode n = M.createObjectNode();
+            if (mc.player == null) {
+                n.put("respawned", false);
+                n.put("reason", "no_player");
+                return n;
+            }
+            mc.player.requestRespawn();
+            // Close the DeathScreen if it's up so subsequent screenshots show the world.
+            if (mc.currentScreen != null) mc.setScreen(null);
+            n.put("respawned", true);
+            return n;
+        });
     }
 
     private static RpcHandler state() {
