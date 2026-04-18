@@ -13,6 +13,7 @@ import com.btone.c.rpc.RpcRouter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.registry.Registries;
@@ -32,6 +33,14 @@ import java.util.List;
  */
 public final class BaritoneHandlers {
     private static final ObjectMapper M = new ObjectMapper();
+    // Off the client thread: Baritone command parsing and scanning can run for
+    // seconds and would otherwise jam the MC tick queue.
+    private static final java.util.concurrent.ExecutorService COMMAND_EXEC =
+        java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "btone-c-baritone-command");
+            t.setDaemon(true);
+            return t;
+        });
 
     private BaritoneHandlers() {}
 
@@ -114,6 +123,53 @@ public final class BaritoneHandlers {
         r.register("baritone.build", params -> {
             // Schematic loading is its own rabbit hole — out of scope for v0.1.
             throw new UnsupportedOperationException("baritone.build not implemented in v0.1");
+        });
+        r.register("baritone.command", params -> {
+            // Direct entry into Baritone's command manager. Run on a dedicated
+            // worker thread (NOT the client thread) so the parser/scanner can't
+            // jam the client tick. Fire-and-forget.
+            String text = params.get("text").asText();
+            COMMAND_EXEC.submit(() -> {
+                try {
+                    primary().getCommandManager().execute(text);
+                } catch (Throwable ignored) {}
+            });
+            ObjectNode n = M.createObjectNode();
+            n.put("queued", true);
+            n.put("command", text);
+            return n;
+        });
+        r.register("baritone.get_to_block", params -> {
+            // Bypasses the command parser entirely; calls IGetToBlockProcess directly.
+            // This is the underlying mechanism that "#goto chest" uses.
+            String blockId = params.get("blockId").asText();
+            Identifier ident = Identifier.tryParse(blockId);
+            if (ident == null) throw new IllegalArgumentException("bad_block_id:" + blockId);
+            Block block = Registries.BLOCK.get(ident);
+            if (block == null || block == Blocks.AIR) throw new IllegalArgumentException("unknown_block:" + blockId);
+            COMMAND_EXEC.submit(() -> {
+                try {
+                    primary().getGetToBlockProcess().getToBlock(block);
+                } catch (Throwable ignored) {}
+            });
+            ObjectNode n = M.createObjectNode();
+            n.put("queued", true);
+            n.put("block", blockId);
+            return n;
+        });
+        r.register("baritone.thisway", params -> {
+            // No scan, no goal-block search. Walks N blocks along current look direction.
+            // Pure pathfinding test — confirms baritone integration works at all.
+            int dist = params.has("distance") ? params.get("distance").asInt() : 50;
+            COMMAND_EXEC.submit(() -> {
+                try {
+                    primary().getCommandManager().execute("thisway " + dist);
+                } catch (Throwable ignored) {}
+            });
+            ObjectNode n = M.createObjectNode();
+            n.put("queued", true);
+            n.put("distance", dist);
+            return n;
         });
         r.register("baritone.setting", params -> ClientThread.call(1_000, () -> {
             String key = params.get("key").asText();

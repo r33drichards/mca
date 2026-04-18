@@ -24,18 +24,22 @@ public final class ChatHandlers {
     }
 
     public static void registerAll(RpcRouter r) {
-        r.register("chat.send", params -> ClientThread.call(2_000, () -> {
+        r.register("chat.send", params -> {
+            // Fire-and-forget. sendChatMessage in offline mode triggers chat-signing
+            // which can block for seconds; submit().get() would time us out.
+            // The agent should use baritone.command for # prefixes, not chat.send,
+            // to avoid the chat-signing path entirely.
             String text = params.get("text").asText();
-            MinecraftClient mc = MinecraftClient.getInstance();
-            var p = mc.player;
-            var nh = mc.getNetworkHandler();
-            if (p == null || nh == null) throw new IllegalStateException("no_player");
-            if (text.startsWith("/")) nh.sendChatCommand(text.substring(1));
-            else nh.sendChatMessage(text);
+            MinecraftClient.getInstance().execute(() -> {
+                var nh = MinecraftClient.getInstance().getNetworkHandler();
+                if (nh == null) return;
+                if (text.startsWith("/")) nh.sendChatCommand(text.substring(1));
+                else nh.sendChatMessage(text);
+            });
             ObjectNode n = M.createObjectNode();
-            n.put("sent", true);
+            n.put("queued", true);
             return n;
-        }));
+        });
         r.register("chat.recent", params -> {
             int requested = params == null || params.isNull() ? 50 : params.path("n").asInt(50);
             int n = Math.max(0, Math.min(requested, BUFFER_MAX));
