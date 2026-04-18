@@ -53,6 +53,8 @@ In Prism: *Add Instance → Vanilla → Version 1.21.8 → Loader: Fabric → la
 
 ### Task 1: Gradle + Loom bootstrap
 
+> **Implementation note:** exact versions were bumped from the originally drafted plan to match live maven.fabricmc.net state as of 2026-04-18. Structure unchanged.
+
 **Why:** Fabric mods build with Gradle using the Loom plugin. We need a project that compiles a minimal mod JAR.
 
 **Files:**
@@ -71,15 +73,15 @@ org.gradle.parallel=true
 
 minecraft_version=1.21.8
 yarn_mappings=1.21.8+build.1
-loader_version=0.16.14
-fabric_version=0.110.5+1.21.8
-fabric_kotlin_version=1.13.0+kotlin.2.0.21
+loader_version=0.19.2
+fabric_version=0.136.1+1.21.8
+fabric_kotlin_version=1.13.10+kotlin.2.3.20
 
 mod_version=0.1.0
 maven_group=com.btone
 archives_base_name=btone-mod-b
 
-kotlin_version=2.0.21
+kotlin_version=2.3.20
 mcp_sdk_version=1.0.0
 ```
 
@@ -102,8 +104,8 @@ rootProject.name = "btone-mod-b"
 
 ```kotlin
 plugins {
-    id("fabric-loom") version "1.7-SNAPSHOT"
-    kotlin("jvm") version "2.0.21"
+    id("fabric-loom") version "1.11.8"
+    kotlin("jvm") version "2.3.20"
     `maven-publish`
 }
 
