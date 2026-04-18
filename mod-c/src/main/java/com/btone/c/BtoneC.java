@@ -1,5 +1,7 @@
 package com.btone.c;
 
+import com.btone.c.handlers.PlayerHandlers;
+import com.btone.c.handlers.WorldReadHandlers;
 import com.btone.c.http.BtoneHttpServer;
 import com.btone.c.rpc.RpcRouter;
 import com.btone.c.util.ConnectionConfig;
@@ -35,6 +37,9 @@ public final class BtoneC implements ClientModInitializer {
                 router.all().keySet().forEach(arr::add);
                 return n;
             });
+
+            PlayerHandlers.registerAll(router);
+            WorldReadHandlers.registerAll(router);
 
             Map<String, Consumer<HttpExchange>> routes = new LinkedHashMap<>();
             routes.put("/health", ex -> BtoneHttpServer.write(ex, 200, "{\"ok\":true}"));
