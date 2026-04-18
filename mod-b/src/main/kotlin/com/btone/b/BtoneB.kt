@@ -4,6 +4,7 @@ import com.btone.b.eval.EvalStatusTool
 import com.btone.b.eval.EvalTool
 import com.btone.b.eval.LiveEvalContext
 import com.btone.b.events.EventBus
+import com.btone.b.events.SseEndpoint
 import com.btone.b.http.BtoneHttpServer
 import com.btone.b.mcp.McpTransport
 import com.btone.b.mcp.ToolRegistry
@@ -21,6 +22,7 @@ class BtoneB : ClientModInitializer {
 
         // Event bus is created here so Task 11/12 can wire client lifecycle events into it.
         val eventBus = EventBus()
+        val sse = SseEndpoint(eventBus)
 
         ToolRegistry.register(EvalTool({ LiveEvalContext(eventBus) }))
         ToolRegistry.register(EvalStatusTool())
@@ -31,6 +33,7 @@ class BtoneB : ClientModInitializer {
             routes = mapOf(
                 "/health" to { ex -> BtoneHttpServer.write(ex, 200, """{"ok":true}""") },
                 "/mcp" to transport::handle,
+                "/events" to sse::handle,
             ),
         )
         server.start()
