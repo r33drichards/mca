@@ -8,6 +8,7 @@ import com.btone.c.handlers.ChatHandlers;
 import com.btone.c.handlers.ContainerHandlers;
 import com.btone.c.handlers.MeteorHandlers;
 import com.btone.c.handlers.PlayerHandlers;
+import com.btone.c.handlers.VisionHandlers;
 import com.btone.c.handlers.WorldReadHandlers;
 import com.btone.c.handlers.WorldWriteHandlers;
 import com.btone.c.http.BtoneHttpServer;
@@ -55,6 +56,7 @@ public final class BtoneC implements ClientModInitializer {
             WorldWriteHandlers.registerAll(router);
             ContainerHandlers.registerAll(router);
             BaritoneHandlers.registerAll(router);
+            VisionHandlers.registerAll(router);
 
             // Optional Meteor surface -- reflection-loaded if Meteor is present.
             // Per the lessons from mod-b: probe with Class.forName at registration
