@@ -412,15 +412,24 @@ public final class VisionHandlers {
                         blockAnnotations(mc, camPosSnapshot, viewSnapshot, projSnapshot, req.annotateRange);
                 final ObjectNode crossAnn = crosshairAnnotation(mc);
 
-                // framesUntilCapture = 1: defer one tick so frame N's render
-                // (which uses the override) completes BEFORE we read the
-                // framebuffer at the start of frame N+1.
+                // framesUntilCapture = 2 because of MC's render-loop ordering:
+                //   This prep runnable runs at MinecraftClient.render line 1319
+                //     (mc.execute task drain).
+                //   END_CLIENT_TICK fires at line 1325 (inside this.tick()).
+                //   Framebuffer clear is at line 1352.
+                //   gameRenderer.render with the override is at line 1358.
+                // So the SAME frame's END_CLIENT_TICK (post-prep) sees a
+                // framebuffer that still holds the PREVIOUS render. We must
+                // wait one more tick: with counter=2, the first END_CLIENT_TICK
+                // (frame N) decrements 2→1 (skip), MC then renders the override
+                // at line 1358, and the NEXT END_CLIENT_TICK (frame N+1) sees
+                // counter 1→0 and captures the override-rendered framebuffer.
                 PENDING.add(new PendingCapture(
                         req, respFuture,
                         savedYaw, savedPitch, savedHeadYaw, savedBodyYaw, savedHud,
                         override, useYaw, usePitch,
                         camPosSnapshot, entityAnns, blockAnns, crossAnn,
-                        1));
+                        2));
             } catch (Throwable t) {
                 // Best-effort restore on failure to enqueue.
                 try {
