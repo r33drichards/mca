@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "btone-c-v8": {
+      "command": "/absolute/path/to/btone/btone-c-runner/start-mcp-v8.sh",
+      "args": [],
+      "env": {}
+    }
+  }
+}
