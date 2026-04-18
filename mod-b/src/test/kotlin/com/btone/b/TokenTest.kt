@@ -2,6 +2,7 @@ package com.btone.b
 
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
@@ -16,11 +17,11 @@ class TokenTest {
         assertNotEquals(Token.generate(), Token.generate())
     }
 
-    @Test fun `validates constant-time`() {
+    @Test fun `matches returns correct result`() {
         val t = Token.generate()
         assertTrue(Token.matches(t, t))
-        assertTrue(!Token.matches(t, "x".repeat(t.length)))
-        assertTrue(!Token.matches(t, "short"))
-        assertTrue(!Token.matches("", t))
+        assertFalse(Token.matches(t, "x".repeat(t.length)))
+        assertFalse(Token.matches(t, "short"))
+        assertFalse(Token.matches("", t))
     }
 }
