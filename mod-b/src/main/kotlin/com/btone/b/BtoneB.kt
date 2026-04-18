@@ -1,5 +1,6 @@
 package com.btone.b
 
+import com.btone.b.eval.EvalStatusTool
 import com.btone.b.eval.EvalTool
 import com.btone.b.eval.LiveEvalContext
 import com.btone.b.events.EventBus
@@ -22,6 +23,7 @@ class BtoneB : ClientModInitializer {
         val eventBus = EventBus()
 
         ToolRegistry.register(EvalTool({ LiveEvalContext(eventBus) }))
+        ToolRegistry.register(EvalStatusTool())
 
         val server = BtoneHttpServer(
             port = 25590,
