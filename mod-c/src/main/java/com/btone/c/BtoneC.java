@@ -1,5 +1,6 @@
 package com.btone.c;
 
+import com.btone.c.handlers.BaritoneHandlers;
 import com.btone.c.handlers.ChatHandlers;
 import com.btone.c.handlers.ContainerHandlers;
 import com.btone.c.handlers.PlayerHandlers;
@@ -46,6 +47,7 @@ public final class BtoneC implements ClientModInitializer {
             ChatHandlers.registerAll(router);
             WorldWriteHandlers.registerAll(router);
             ContainerHandlers.registerAll(router);
+            BaritoneHandlers.registerAll(router);
 
             Map<String, Consumer<HttpExchange>> routes = new LinkedHashMap<>();
             routes.put("/health", ex -> BtoneHttpServer.write(ex, 200, "{\"ok\":true}"));
