@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gl.Framebuffer;
 import net.minecraft.client.render.Camera;
@@ -43,36 +44,49 @@ import java.util.concurrent.TimeoutException;
  *
  * <h2>Threading model</h2>
  *
- * <p>The naive layout — {@code mc.execute(() -> { takeScreenshot(...); future.get(); })} —
- * deadlocks. {@link ScreenshotRecorder#takeScreenshot} schedules an async GPU
- * readback whose completion callback ALSO runs on the render thread. If the
- * outer runnable blocks waiting for the inner future on that same thread, the
- * callback can never fire.
- *
- * <p>The fix: never block on the render thread. The pipeline is split:
+ * <p>Two non-obvious constraints shape this code:
  *
  * <ol>
- *   <li>The RPC handler (running on the HTTP server thread, off the render
- *       thread) creates a {@code respFuture} and submits a runnable via
- *       {@link MinecraftClient#execute(Runnable)}.</li>
- *   <li>That runnable saves player rotation/HUD, applies the override,
- *       computes camera matrices, and calls
- *       {@code ScreenshotRecorder.takeScreenshot(fb, callback)}. It returns
- *       immediately.</li>
- *   <li>The callback (later, on the render thread, possibly next render tick)
- *       converts the {@link NativeImage} → {@link BufferedImage} → PNG/JPEG
- *       bytes → base64, builds entity/block/crosshair annotations using the
- *       OVERRIDE camera matrices that were captured into final-locals BEFORE
- *       takeScreenshot was called, restores rotation/HUD, and completes
- *       {@code respFuture}.</li>
- *   <li>The HTTP thread blocks on {@code respFuture.get(5s)}. This is the
- *       only blocking call and it is NOT on the render thread, so the
- *       callback can drain it.</li>
+ *   <li><b>No render-thread blocking.</b>
+ *       {@link ScreenshotRecorder#takeScreenshot} schedules an async GPU
+ *       readback whose completion callback also runs on the render thread.
+ *       If we block on its future from the same thread, the callback can
+ *       never drain. So the HTTP thread (off render thread) is the only
+ *       place we await futures.</li>
+ *   <li><b>State changes don't take effect until the NEXT render.</b>
+ *       Setting {@code player.setYaw(...)} or {@code mc.options.hudHidden}
+ *       just mutates state; the captured framebuffer reflects the most
+ *       recently rendered frame, which used the previous state. So we have
+ *       to apply the change, let MC render one frame with it, THEN call
+ *       takeScreenshot.</li>
+ * </ol>
+ *
+ * <p>Pipeline (all enqueueing happens off the render thread; everything
+ * else happens on it):
+ *
+ * <ol>
+ *   <li>HTTP thread: create {@code respFuture}, submit prep runnable via
+ *       {@link MinecraftClient#execute(Runnable)}, await respFuture.get(5s).</li>
+ *   <li>Prep runnable (render thread, runs at frame N's task drain BEFORE
+ *       the frame's render): snapshot saved state, apply yaw/pitch/HUD
+ *       override, run {@code Camera.update} so our matrix snapshot reflects
+ *       the override, compute matrices + entity/block/crosshair annotations,
+ *       enqueue a {@link PendingCapture} into {@code PENDING}.</li>
+ *   <li>Frame N proceeds: {@code MinecraftClient.render} clears the
+ *       framebuffer and calls {@code gameRenderer.render} — which uses the
+ *       overridden player rotation. Framebuffer now holds the override
+ *       scene.</li>
+ *   <li>Frame N+1 starts. END_CLIENT_TICK fires (BEFORE frame N+1's clear).
+ *       Tick handler dequeues the pending capture, calls takeScreenshot
+ *       (which reads the still-valid frame-N framebuffer), restores saved
+ *       state immediately, and registers the GPU-readback callback that
+ *       encodes PNG/JPEG and completes respFuture.</li>
+ *   <li>HTTP thread unblocks, returns the response.</li>
  * </ol>
  *
  * <p>Panorama chains N captures sequentially via
- * {@link CompletableFuture#thenCompose}; only the final aggregated future is
- * awaited on the HTTP thread.
+ * {@link CompletableFuture#thenCompose}; only the final aggregated future
+ * is awaited on the HTTP thread.
  */
 public final class VisionHandlers {
     private static final ObjectMapper M = new ObjectMapper();
@@ -116,7 +130,21 @@ public final class VisionHandlers {
         INTERACTIVE_BLOCKS = java.util.Collections.unmodifiableSet(s);
     }
 
+    /**
+     * Pending captures awaiting the next post-state-change render frame.
+     *
+     * <p>Static because Fabric's {@link ClientTickEvents} has no
+     * {@code unregister} — we install ONE shared listener at startup that
+     * drains this queue forever. Each entry counts down ticks; when ready,
+     * the listener calls {@link ScreenshotRecorder#takeScreenshot} for it
+     * and restores the saved state.
+     */
+    private static final java.util.concurrent.ConcurrentLinkedQueue<PendingCapture> PENDING =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private static volatile boolean tickHandlerInstalled = false;
+
     public static void registerAll(RpcRouter r) {
+        installTickHandler();
         r.register("world.screenshot", params -> {
             CaptureRequest req = CaptureRequest.of(params);
             CompletableFuture<ObjectNode> fut = scheduleCapture(req);
@@ -200,11 +228,142 @@ public final class VisionHandlers {
     // --- Async capture pipeline --------------------------------------------
 
     /**
-     * Submits one capture to the render thread. The returned future completes
-     * (off any thread guarantee — typically the render thread inside the
-     * GPU-readback callback) with a fully-populated response node.
+     * Pending capture record. Built on the render thread by the prep
+     * runnable, consumed by the END_CLIENT_TICK handler one tick later
+     * (after MC has rendered one frame with the override applied).
+     */
+    private static final class PendingCapture {
+        final CaptureRequest req;
+        final CompletableFuture<ObjectNode> respFuture;
+        // Saved state (to restore after capture).
+        final float savedYaw, savedPitch, savedHeadYaw, savedBodyYaw;
+        final boolean savedHud;
+        final boolean override;
+        // Override values (also stamped into the response.camera node).
+        final float useYaw, usePitch;
+        // Camera + projection snapshot taken AFTER override applied.
+        final Vec3d camPosSnapshot;
+        final ArrayNode entityAnns;
+        final ArrayNode blockAnns;
+        final ObjectNode crossAnn;
+        // Ticks remaining before the GPU readback. Decremented on each
+        // END_CLIENT_TICK; capture fires when this drops to 0.
+        int framesUntilCapture;
+
+        PendingCapture(CaptureRequest req, CompletableFuture<ObjectNode> respFuture,
+                       float sy, float sp, float shy, float sby, boolean shud,
+                       boolean override, float useYaw, float usePitch,
+                       Vec3d camPos, ArrayNode entities, ArrayNode blocks,
+                       ObjectNode crosshair, int framesUntilCapture) {
+            this.req = req; this.respFuture = respFuture;
+            this.savedYaw = sy; this.savedPitch = sp;
+            this.savedHeadYaw = shy; this.savedBodyYaw = sby;
+            this.savedHud = shud;
+            this.override = override;
+            this.useYaw = useYaw; this.usePitch = usePitch;
+            this.camPosSnapshot = camPos;
+            this.entityAnns = entities; this.blockAnns = blocks;
+            this.crossAnn = crosshair;
+            this.framesUntilCapture = framesUntilCapture;
+        }
+    }
+
+    /**
+     * Install the one-shot END_CLIENT_TICK listener that drains
+     * {@link #PENDING}. Idempotent (Fabric's event API has no unregister,
+     * so we must guarantee a single registration for the JVM lifetime).
+     */
+    private static synchronized void installTickHandler() {
+        if (tickHandlerInstalled) return;
+        tickHandlerInstalled = true;
+        ClientTickEvents.END_CLIENT_TICK.register(VisionHandlers::onEndClientTick);
+    }
+
+    /**
+     * Per-tick drain: each pending capture decrements its
+     * {@code framesUntilCapture}. When it reaches 0, we know the previous
+     * frame rendered with the override applied; the framebuffer holds that
+     * scene. Take the screenshot, restore state immediately, and let the
+     * GPU-readback callback complete the future.
+     */
+    private static void onEndClientTick(MinecraftClient mc) {
+        if (PENDING.isEmpty()) return;
+        // Drain at most one ready capture per tick. The framebuffer can only
+        // hold one scene at a time, so processing N captures back-to-back
+        // would all read the SAME framebuffer (incorrect). Sequencing is
+        // enforced by panorama's CompletableFuture.thenCompose chain anyway.
+        java.util.Iterator<PendingCapture> it = PENDING.iterator();
+        while (it.hasNext()) {
+            PendingCapture pc = it.next();
+            pc.framesUntilCapture--;
+            if (pc.framesUntilCapture > 0) continue;
+            it.remove();
+            try {
+                runCapture(mc, pc);
+            } catch (Throwable t) {
+                pc.respFuture.completeExceptionally(t);
+            }
+            // Only one capture per tick (see above).
+            return;
+        }
+    }
+
+    /** Schedule the GPU readback for a ready PendingCapture, then restore state. */
+    private static void runCapture(MinecraftClient mc, PendingCapture pc) {
+        Framebuffer fb = mc.getFramebuffer();
+        if (fb == null) {
+            pc.respFuture.completeExceptionally(new IllegalStateException("no_framebuffer"));
+            restoreState(mc, pc);
+            return;
+        }
+        try {
+            ScreenshotRecorder.takeScreenshot(fb, img -> {
+                try {
+                    if (img == null) {
+                        pc.respFuture.completeExceptionally(
+                                new IllegalStateException("null_native_image"));
+                        return;
+                    }
+                    ObjectNode out = encodeAndAssemble(
+                            pc.req, img, pc.useYaw, pc.usePitch, pc.camPosSnapshot,
+                            pc.entityAnns, pc.blockAnns, pc.crossAnn);
+                    pc.respFuture.complete(out);
+                } catch (Throwable t) {
+                    pc.respFuture.completeExceptionally(t);
+                }
+            });
+        } finally {
+            // Restore IMMEDIATELY after scheduling the readback. The
+            // framebuffer texture the GPU will copy is already locked;
+            // mutating player state now affects only the NEXT render frame
+            // (which is what the human player will see).
+            restoreState(mc, pc);
+        }
+    }
+
+    private static void restoreState(MinecraftClient mc, PendingCapture pc) {
+        try {
+            mc.options.hudHidden = pc.savedHud;
+            if (pc.override && mc.player != null) {
+                mc.player.setYaw(pc.savedYaw);
+                mc.player.setPitch(pc.savedPitch);
+                mc.player.setHeadYaw(pc.savedHeadYaw);
+                mc.player.setBodyYaw(pc.savedBodyYaw);
+            }
+        } catch (Throwable ignored) {
+            // Swallow — restoration must never throw past the dispatcher.
+        }
+    }
+
+    /**
+     * Submits one capture. Returns a future that completes when the
+     * GPU readback finishes and the response is encoded.
      *
-     * <p>Never blocks the caller. Never blocks the render thread.
+     * <p>The prep runnable executes on the render thread BEFORE the next
+     * frame's render. It applies the override + HUD change, then enqueues
+     * a {@link PendingCapture} that the END_CLIENT_TICK handler will pick
+     * up one tick later (i.e., AFTER MC has rendered one frame with the
+     * override).
      */
     private static CompletableFuture<ObjectNode> scheduleCapture(CaptureRequest req) {
         CompletableFuture<ObjectNode> respFuture = new CompletableFuture<>();
@@ -215,13 +374,7 @@ public final class VisionHandlers {
                     respFuture.completeExceptionally(new IllegalStateException("no_world"));
                     return;
                 }
-                Framebuffer fb = mc.getFramebuffer();
-                if (fb == null) {
-                    respFuture.completeExceptionally(new IllegalStateException("no_framebuffer"));
-                    return;
-                }
 
-                // Snapshot original state for restoration.
                 final float savedYaw = mc.player.getYaw();
                 final float savedPitch = mc.player.getPitch();
                 final float savedHeadYaw = mc.player.getHeadYaw();
@@ -242,9 +395,10 @@ public final class VisionHandlers {
                 }
                 mc.options.hudHidden = !req.includeHud;
 
-                // Snapshot camera + projection NOW (override has been applied).
-                // The GPU readback callback may fire on a later tick, by which
-                // point we'll have restored rotation — so we must lock these in.
+                // Snapshot matrices + annotations using the OVERRIDE camera.
+                // These are computed on this prep frame; the actual scene render
+                // (with the override applied) happens AFTER this runnable returns,
+                // and the screenshot fires one tick after that.
                 final Camera cam = mc.gameRenderer.getCamera();
                 final Vec3d camPosSnapshot = cam.getPos();
                 final Quaternionf invRot = cam.getRotation().conjugate(new Quaternionf());
@@ -252,45 +406,29 @@ public final class VisionHandlers {
                 final float fov = mc.options.getFov().getValue().floatValue();
                 final Matrix4f projSnapshot = mc.gameRenderer.getBasicProjectionMatrix(fov);
 
-                // Build the annotations NOW too, before we restore state and
-                // before the GPU callback fires. The world snapshot at this
-                // point matches what's about to be captured (the render
-                // pipeline is already in flight for the current frame).
                 final ArrayNode entityAnns =
                         entityAnnotations(mc, camPosSnapshot, viewSnapshot, projSnapshot);
                 final ArrayNode blockAnns =
                         blockAnnotations(mc, camPosSnapshot, viewSnapshot, projSnapshot, req.annotateRange);
                 final ObjectNode crossAnn = crosshairAnnotation(mc);
 
-                // Schedule the GPU readback. The callback may fire NOW or a
-                // tick later — either way it runs on the render thread.
-                ScreenshotRecorder.takeScreenshot(fb, img -> {
-                    try {
-                        if (img == null) {
-                            respFuture.completeExceptionally(
-                                    new IllegalStateException("null_native_image"));
-                            return;
-                        }
-                        ObjectNode out = encodeAndAssemble(
-                                req, img, useYaw, usePitch, camPosSnapshot,
-                                entityAnns, blockAnns, crossAnn);
-                        respFuture.complete(out);
-                    } catch (Throwable t) {
-                        respFuture.completeExceptionally(t);
-                    }
-                });
-
-                // Restore state immediately. The framebuffer the GPU is
-                // reading from is already locked; subsequent player updates
-                // do not affect the in-flight capture.
-                mc.options.hudHidden = savedHud;
-                if (override) {
-                    mc.player.setYaw(savedYaw);
-                    mc.player.setPitch(savedPitch);
-                    mc.player.setHeadYaw(savedHeadYaw);
-                    mc.player.setBodyYaw(savedBodyYaw);
-                }
+                // framesUntilCapture = 1: defer one tick so frame N's render
+                // (which uses the override) completes BEFORE we read the
+                // framebuffer at the start of frame N+1.
+                PENDING.add(new PendingCapture(
+                        req, respFuture,
+                        savedYaw, savedPitch, savedHeadYaw, savedBodyYaw, savedHud,
+                        override, useYaw, usePitch,
+                        camPosSnapshot, entityAnns, blockAnns, crossAnn,
+                        1));
             } catch (Throwable t) {
+                // Best-effort restore on failure to enqueue.
+                try {
+                    if (mc.player != null) {
+                        // We don't know what was saved at this point, so just
+                        // swallow. Nothing was promised to the caller yet.
+                    }
+                } catch (Throwable ignored) {}
                 respFuture.completeExceptionally(t);
             }
         });
