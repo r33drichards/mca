@@ -33,6 +33,7 @@ dependencies {
 
     // Jackson for JSON (MCP SDK also pulls this; pin explicitly)
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.2")
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.17.2")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5:${property("kotlin_version")}")
