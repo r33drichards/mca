@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "btone_mod_c",
+  "version": "${version}",
+  "name": "Btone Mod C (data-pipe)",
+  "description": "Minecraft HTTP RPC surface driven by external MCP hosts.",
+  "environment": "client",
+  "entrypoints": { "client": ["com.btone.c.BtoneC"] },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.8",
+    "java": ">=21",
+    "fabric-api": "*",
+    "baritone": "*"
+  },
+  "suggests": {
+    "meteor-client": "*"
+  }
+}
