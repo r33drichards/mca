@@ -1,7 +1,6 @@
 plugins {
     id("fabric-loom") version "1.11.8"
     kotlin("jvm") version "2.3.20"
-    `maven-publish`
 }
 
 base { archivesName = property("archives_base_name") as String }
@@ -42,8 +41,3 @@ kotlin { jvmToolchain(21) }
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 
 tasks.test { useJUnitPlatform() }
-
-loom {
-    // include runtime deps inside the jar (Jar-in-Jar)
-    runtimeOnlyLog4j = false
-}
