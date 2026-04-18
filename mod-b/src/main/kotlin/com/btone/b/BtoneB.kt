@@ -4,6 +4,7 @@ import com.btone.b.eval.EvalStatusTool
 import com.btone.b.eval.EvalTool
 import com.btone.b.eval.LiveEvalContext
 import com.btone.b.events.EventBus
+import com.btone.b.events.GameEvents
 import com.btone.b.events.SseEndpoint
 import com.btone.b.http.BtoneHttpServer
 import com.btone.b.mcp.McpTransport
@@ -37,6 +38,7 @@ class BtoneB : ClientModInitializer {
             ),
         )
         server.start()
+        GameEvents.register(eventBus)
         ClientLifecycleEvents.CLIENT_STOPPING.register { _ ->
             log.info("btone-mod-b stopping, closing http server")
             server.stop()
