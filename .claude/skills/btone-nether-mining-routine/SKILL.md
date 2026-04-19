@@ -134,7 +134,9 @@ for i in $(seq 0 $((N-1))); do
   STATE=$(rpc '{"method":"container.state"}')
   NSLOT=$(echo "$STATE" | jq -r '.result.slots // [] | length')
   [ "$NSLOT" = "0" ] || [ "$NSLOT" = "null" ] && { rpc '{"method":"container.close"}' >/dev/null; continue; }
-  CHEST_SIZE=$([ "$NSLOT" -gt 70 ] && echo 54 || echo 27)
+  # NSLOT only counts NON-EMPTY slots — useless for sizing. Use max slot id.
+  MAX=$(echo "$STATE" | jq -r '[.result.slots[]?.slot] | max // 0')
+  CHEST_SIZE=$([ "$MAX" -ge 54 ] && echo 54 || echo 27)
   # QUICK_MOVE basalt + blackstone from player slots (>= CHEST_SIZE) into chest
   for slot in $(echo "$STATE" | jq -r ".result.slots[]? | select(.slot >= $CHEST_SIZE and (.id == \"minecraft:basalt\" or .id == \"minecraft:blackstone\")) | .slot"); do
     rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$slot,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
@@ -174,24 +176,24 @@ Resupply triggers:
 - `food < 16` → restock from food barrel or craft bread
 - `armor < 4` → grab from chest wall (auto-armor equips)
 
-### 3a. Pickaxe / armor — from the chest wall
+### 3a. Pickaxe / armor / food — primary chest first, loot wall as fallback
 
-Coords in `coords.md` ("Loot wall — armor + tools chests" — typically
-`(568–569, 66–68, 910–917)` on the user's test world).
+Two stops, in order: the **primary gear+food chest** (project-specific
+location, see `coords.md` — typically near the bot's warehouse) covers
+food and most armor, and the **loot wall** is the fallback for what the
+primary doesn't have (currently: diamond_pickaxe, full diamond armor set).
 
 ```bash
-rpc '{"method":"baritone.goto","params":{"x":567,"y":67,"z":911}}'
-# wait
-rpc '{"method":"container.open","params":{"x":568,"y":66,"z":910}}'
+# --- Primary stop: gear+food chest (project coords from coords.md) ---
+PRIMARY_ADJ_X=437; PRIMARY_ADJ_Y=69; PRIMARY_ADJ_Z=846
+PRIMARY_X=437; PRIMARY_Y=68; PRIMARY_Z=847
+rpc "{\"method\":\"baritone.goto\",\"params\":{\"x\":$PRIMARY_ADJ_X,\"y\":$PRIMARY_ADJ_Y,\"z\":$PRIMARY_ADJ_Z}}"
+# wait until baritone idle
+rpc "{\"method\":\"container.open\",\"params\":{\"x\":$PRIMARY_X,\"y\":$PRIMARY_Y,\"z\":$PRIMARY_Z}}"
 sleep 1.5
 STATE=$(rpc '{"method":"container.state"}')
 
-# Grab one diamond_pickaxe
-SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.id == "minecraft:diamond_pickaxe")][0].slot // empty')
-[ -n "$SLOT" ] && rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}"
-sleep 0.3
-
-# For each missing armor piece, grab one of that piece
+# Grab armor pieces missing from slots 36-39 (auto-armor will equip)
 for piece in helmet chestplate leggings boots; do
   EQUIPPED=$(rpc '{"method":"player.inventory"}' | jq -r "[.result.main[] | select(.slot >= 36 and .slot <= 39 and (.id | test(\"$piece\")))] | length")
   [ "$EQUIPPED" -gt 0 ] && continue
@@ -200,8 +202,37 @@ for piece in helmet chestplate leggings boots; do
   sleep 0.3
 done
 
+# Grab some food (target ~3 stacks of cooked fish or bread)
+FOOD_CT=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("bread|cooked_|beetroot")) | .count] | add // 0')
+TAKEN=0
+while [ "$FOOD_CT" -lt 64 ] && [ "$TAKEN" -lt 3 ]; do
+  SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.id | test("cooked_|bread|beetroot"))][0].slot // empty')
+  [ -z "$SLOT" ] && break
+  rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
+  TAKEN=$((TAKEN+1))
+  sleep 0.3
+  STATE=$(rpc '{"method":"container.state"}')  # refresh — slot is now empty
+  FOOD_CT=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("bread|cooked_|beetroot")) | .count] | add // 0')
+done
 rpc '{"method":"container.close"}'
-# auto-armor module equips within ~1s
+sleep 0.5
+
+# --- Backup stop: loot wall — only when primary is missing what you need ---
+# Currently: diamond_pickaxe + full diamond armor set live ONLY at the loot wall.
+# Skip this stop entirely if pickaxe count is OK and armor is full.
+PICKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id == "minecraft:diamond_pickaxe")] | length')
+if [ "$PICKS" -lt 2 ]; then
+  rpc '{"method":"baritone.goto","params":{"x":567,"y":67,"z":911}}'
+  # wait
+  rpc '{"method":"container.open","params":{"x":568,"y":66,"z":910}}'
+  sleep 1.5
+  STATE=$(rpc '{"method":"container.state"}')
+  SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.id == "minecraft:diamond_pickaxe")][0].slot // empty')
+  [ -n "$SLOT" ] && rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}"
+  sleep 0.3
+  rpc '{"method":"container.close"}'
+fi
+# auto-armor module equips armor within ~1s
 ```
 
 ### 3b. Food — from food barrels OR by baking bread

@@ -20,11 +20,22 @@ Description: Small wooden interior with bookshelves, lanterns, and an oak door. 
 Location: **`(478, 71, 834)`** (overworld)
 Description: Where the bot returns from the Nether portal. Near the spawn area on the same wooden platform as the chest fortress. Used as the consolidated drop-off for mined materials (basalt, blackstone, etc.). Bot prefers to deposit here before heading out for another mining run so a death only loses what's in-flight.
 
+### Gear & food chest (lmoik's, near spawn) — PRIMARY resupply
+Location: **`(437, 68, 847–848)`** — single double-chest. Bot stands at `(437, 69, 846)` to interact.
+Contents (snapshot 2026-04-18):
+- Food: cooked_cod x64+ (multiple stacks), cooked_salmon x64+, beetroot x64+ (lots, ~10+ stacks total)
+- Iron armor: 9× iron_chestplate, 6× iron_leggings, plus golden_boots/golden_leggings, chainmail_leggings
+- Diamond armor: 1× diamond_helmet (slot 37). NO diamond_chestplate/leggings/boots here — fall back to loot wall for those.
+- Tools: 11× stone_pickaxe (junk-tier), 3× iron_shovel, 1× diamond_axe. **No diamond_pickaxe** — keep loot wall as the pickaxe source.
+- Other junk: leather pieces
+
+Use as the default RESUPPLY stop because it's right next to the warehouse + nether-portal area. Skip to the loot-wall backup only when this chest is missing what you need (currently: diamond_pickaxe, full diamond armor set).
+
 ### Glass dome greenhouse — THE villager building
 Location: `(498–554, 65–70, 919)` — large area, dome roof
 Description: Massive glass-domed greenhouse. ~50+ villagers visible (Armorers, Weaponsmiths). The chest wall is INSIDE the greenhouse along the east interior wall.
 
-#### Loot wall — armor + tools chests
+#### Loot wall — armor + tools chests (BACKUP — only chest with diamond_pickaxe)
 Location: **`(568–569, 66–68, 910–917)`** — two-sided double-chest wall, accessible from either x=566 (west) or x=571+ (east).
 Contents (snapshot 2026-04-18):
 - Diamond armor (helmet, chestplate, leggings, boots) — 1+ of each, plus iron and chainmail variants
