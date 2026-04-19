@@ -59,7 +59,7 @@ rpc '{"method":"meteor.module.setting_set","params":{"name":"kill-aura","setting
 
 | Module | What it does for the bot |
 |---|---|
-| `auto-eat` | Eats food from hotbar/offhand when food bar drops. Required for unattended runs. |
+| `auto-eat` | Eats food from hotbar/offhand when food bar drops. Required for unattended runs. **Blacklist tweaked in this project to allow `rotten_flesh`** — bot can survive on mob-drop food when normal supplies run out. Set via `meteor.module.setting_set name=auto-eat setting=blacklist value=...` if it gets reset. |
 | `auto-armor` | Pulls armor pieces from main inventory into slots 36-39. The reason "grab any armor and let auto-armor equip it" works. |
 | `auto-tool` | Switches to the best hotbar tool for whatever block the bot is breaking. Mines blackstone with the diamond pickaxe even if a stone pickaxe is selected. |
 | `auto-weapon` | Same as auto-tool but for hostile mobs. Combined with kill-aura, the bot fights back with the best sword in hotbar. |
@@ -270,7 +270,7 @@ echo "pickaxes=$PICK_COUNT food=$FOOD_COUNT armor=$ARMOR_COUNT"
 Resupply triggers:
 - `pickaxes < 3` (target: 1 in hand + 2 spares so a single break doesn't end the run) → grab from chest wall
 - `pickaxes == 0` mid-mine — the MINE poll loop breaks on this; don't try to keep mining bare-handed
-- `food < 16` → restock from food barrel or craft bread
+- `food < 16` → restock from primary chest first, then Warehouse 1 (`454-463, 71-76, 825-836`) which has lots of `rotten_flesh` that the auto-eat blacklist now accepts
 - `armor < 4` → grab from chest wall (auto-armor equips)
 
 ### 3a. Pickaxe / armor / food — primary chest first, loot wall as fallback
@@ -334,16 +334,47 @@ if [ "$PLANKS" -lt 22 ]; then  # ≥2 deaths worth
   sleep 0.3
 fi
 
-# Grab ONE food stack — auto-eat only takes one item per hunger event, so 32-64
+# Grab ONE food stack — auto-eat takes one item per hunger event, so 32-64
 # items is a long mining run's worth. Don't fill the inventory with food.
-FOOD_CT=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("bread|cooked_|beetroot")) | .count] | add // 0')
+# Food order of preference: cooked_/bread/beetroot first (saturating), then
+# rotten_flesh as a last-resort backup. The auto-eat blacklist was updated
+# to allow rotten_flesh, so it's a valid mining-run food.
+FOOD_REGEX='cooked_|bread|beetroot|porkchop|apple|carrot|melon|stew'
+FOOD_CT=$(rpc '{"method":"player.inventory"}' | jq -r "[.result.main[] | select(.id | test(\"$FOOD_REGEX|rotten_flesh\")) | .count] | add // 0")
 if [ "$FOOD_CT" -lt 16 ]; then
-  SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.id | test("cooked_|bread|beetroot"))][0].slot // empty')
+  SLOT=$(echo "$STATE" | jq -r "[.result.slots[]? | select(.id | test(\"$FOOD_REGEX\"))][0].slot // empty")
   [ -n "$SLOT" ] && rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
   sleep 0.3
 fi
 rpc '{"method":"container.close"}'
 sleep 0.5
+
+# Food fallback: if the primary chest didn't yield food, hit Warehouse 1
+# (chest fortress at 454-463, 71-76, 825-836). Many of those chests hold
+# rotten_flesh from the bot's mob kills — and auto-eat now accepts it
+# (blacklist updated in this session).
+FOOD_CT=$(rpc '{"method":"player.inventory"}' | jq -r "[.result.main[] | select(.id | test(\"$FOOD_REGEX|rotten_flesh\")) | .count] | add // 0")
+if [ "$FOOD_CT" -lt 16 ]; then
+  WH1_X=458; WH1_Y=71; WH1_Z=833
+  rpc "{\"method\":\"baritone.goto\",\"params\":{\"x\":$WH1_X,\"y\":$WH1_Y,\"z\":$WH1_Z}}"
+  # wait, then probe nearby chests for food (incl. rotten_flesh)
+  CHESTS=$(rpc '{"method":"world.blocks_around","params":{"radius":5}}' | jq -c '.result.blocks | map(select(.id | test("chest|barrel")))')
+  N=$(echo "$CHESTS" | jq 'length')
+  for i in $(seq 0 $((N-1))); do
+    CX=$(echo "$CHESTS" | jq -r ".[$i].x"); CY=$(echo "$CHESTS" | jq -r ".[$i].y"); CZ=$(echo "$CHESTS" | jq -r ".[$i].z")
+    rpc "{\"method\":\"container.open\",\"params\":{\"x\":$CX,\"y\":$CY,\"z\":$CZ}}" >/dev/null
+    sleep 1
+    STATE=$(rpc '{"method":"container.state"}')
+    SLOT=$(echo "$STATE" | jq -r "[.result.slots[]? | select(.slot < 54 and (.id | test(\"$FOOD_REGEX|rotten_flesh\")))][0].slot // empty")
+    if [ -n "$SLOT" ]; then
+      rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
+      rpc '{"method":"container.close"}' >/dev/null
+      break
+    fi
+    rpc '{"method":"container.close"}' >/dev/null
+    sleep 0.2
+  done
+fi
 
 # --- Backup stop: loot wall — only when primary is missing what you need ---
 # Currently: diamond_pickaxe + full diamond armor set live ONLY at the loot wall.

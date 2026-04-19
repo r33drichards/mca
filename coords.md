@@ -8,10 +8,6 @@ Bot respawns at one of two recurring spots near `(458–470, 70–78, 820–860)
 
 ## Visited buildings
 
-### Chest fortress (NOT the building user wants)
-Location: `(467–468, 73–75, 831–834)`
-Description: 4×5×3 wall of chests stacked in a small enclosed room near spawn. The bot keeps falling into this from spawn. Most chests EMPTY when opened (or container.open didn't actually fire — needs adjacent block, hard to position bot precisely).
-
 ### Wood library / study
 Location: `(449, 75, 861)` ish
 Description: Small wooden interior with bookshelves, lanterns, and an oak door. Visible from spawn looking SE.
@@ -20,9 +16,10 @@ Description: Small wooden interior with bookshelves, lanterns, and an oak door. 
 - Overworld portal: **`(480, 70, 858)`** — what `baritone.get_to_block minecraft:nether_portal` walks to from the spawn area.
 - Nether-side portal: **`(61, 99, 110)`** — bot exits here. **WARNING:** the area to +X (toward `(74, 58, 114)`) is the recurring magma-cube fall-death zone. Always pre-walk `-X` 50+ blocks before firing `baritone.mine`. See the routine's last-safe-spot mechanism for details.
 
-### Warehouse 1 — backup gear/storage stash (TBD coords)
-Location: **TBD — to the LEFT of Warehouse 2 (likely `-X` direction).**
-Description: Per user, additional gear cache. **Action item:** next time the bot reaches Warehouse 2, take a panorama looking left (probably west / `-X`) and document Warehouse 1's exact coords + contents here. Use as secondary fallback for RESUPPLY when Warehouse 2 + the loot wall are both depleted.
+### Warehouse 1 — chest fortress near spawn (PRIMARY food source)
+Location: **`(454–463, 71–76, 825–836)`** — massive chest cluster, ~270 chests across walls. Bot interacts at the perimeter (e.g. `(458, 71, 833)`).
+Adjacent structures inside: ender_chests at `(461, 71, 832–833)` and `(461, 72, 832)`, crafting_table at `(462, 70, 840)`.
+Description: This was previously misidentified as a "chest fortress" (deleted entry). It IS Warehouse 1. Wide variety of items expected here — primary place to find FOOD when Warehouse 2 / lmoik's chest are depleted. Also notable: **rotten_flesh** stockpiles work fine as bot food now (auto-eat blacklist updated to allow it 2026-04-18).
 
 ### Fisherman — fishing rod stash (NOT warehouse 1)
 Location: **`(412–414, 62–63, 845–847)`** — basement-level building west of Warehouse 2.
