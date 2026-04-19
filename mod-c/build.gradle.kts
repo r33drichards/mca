@@ -31,6 +31,13 @@ dependencies {
     // baritone.api.BaritoneAPI break at runtime.
     modCompileOnly(files("libs/baritone-api-fabric-1.15.0.jar"))
 
+    // Meteor Client - vendored JAR, compile-only. We don't ship Meteor (user
+    // installs it via setup-portablemc.sh), but we DO want to compile against
+    // it so we can extend Module + register custom modules in Meteor's GUI.
+    // Reflection-only access still works when Meteor is missing at runtime
+    // (BtoneC catches NoClassDefFoundError around the registration site).
+    modCompileOnly(files("libs/meteor-client-1.21.8.jar"))
+
     // Jackson for JSON. include() is non-transitive so list each artifact.
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.2")
     include("com.fasterxml.jackson.core:jackson-databind:2.17.2")

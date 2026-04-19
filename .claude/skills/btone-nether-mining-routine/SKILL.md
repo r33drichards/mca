@@ -40,9 +40,16 @@ rpc '{"method":"baritone.command","params":{"text":"set allowParkour false"}}'
 rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceCoefficient 4.0"}}'
 rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceRadius 16"}}'
 for m in auto-eat auto-armor auto-tool auto-weapon auto-replenish kill-aura \
-         no-fall auto-totem auto-respawn auto-mend anti-hunger; do
+         no-fall auto-totem auto-respawn auto-mend anti-hunger \
+         run-away-from-danger; do
   rpc "{\"method\":\"meteor.module.enable\",\"params\":{\"name\":\"$m\"}}"
 done
+
+# kill-aura's built-in pause-baritone is exactly what we used to script
+# manually with the HP-drop watcher — flip it on and skip the watcher.
+# range=6 (default 4.5) catches fast-hopping magma cubes a tick earlier.
+rpc '{"method":"meteor.module.setting_set","params":{"name":"kill-aura","setting":"range","value":"6.0"}}'
+rpc '{"method":"meteor.module.setting_set","params":{"name":"kill-aura","setting":"pause-baritone","value":"true"}}'
 # safe-walk is a footgun: it freezes the bot on narrow nether platforms.
 # Don't enable it broadly — toggle on only when you specifically need
 # edge-sneak protection, and toggle off before pathing through tight spots.
@@ -64,6 +71,7 @@ done
 | `auto-respawn` | Automates the respawn click after death — saves the agent from having to call `player.respawn` manually. |
 | `auto-mend` | If the bot is holding/wearing Mending tools/armor, exp orbs auto-repair them. Compounds well with auto-tool. |
 | `anti-hunger` | Cuts hunger drain (avoids sprinting drain mostly). Combined with auto-eat, lets the bot stay topped up on much less food. |
+| `run-away-from-danger` | **Custom mod-c module** (Combat category in Meteor's GUI). Triggers on either a hostile mob entering `range` blocks OR a sudden HP drop. Stops Baritone and pathfinds away from the threat. All settings configurable via the GUI or `meteor.module.setting_*` RPCs. |
 
 When the bot needs a new background behavior, scan `meteor.modules.list`
 for it before writing custom RPC logic:

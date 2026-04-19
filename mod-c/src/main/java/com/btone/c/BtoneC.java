@@ -63,13 +63,19 @@ public final class BtoneC implements ClientModInitializer {
             // time so we know whether to install the routes; the facade itself
             // re-resolves on every call (Meteor may not finish initializing
             // until well after our onInitializeClient runs).
+            boolean meteorOk = false;
             try {
                 Class.forName("meteordevelopment.meteorclient.systems.modules.Modules");
                 MeteorHandlers.registerAll(router);
                 LOG.info("meteor integration enabled");
+                meteorOk = true;
             } catch (ClassNotFoundException cnfe) {
                 LOG.info("meteor not present; meteor.* handlers disabled");
             }
+            final boolean meteorPresent = meteorOk;
+            // Custom-module registration is deferred to CLIENT_STARTED below,
+            // because Modules.get() returns null at onInitializeClient time
+            // (Meteor's own ClientModInitializer hasn't run yet).
 
             Map<String, Consumer<HttpExchange>> routes = new LinkedHashMap<>();
             routes.put("/health", ex -> BtoneHttpServer.write(ex, 200, "{\"ok\":true}"));
@@ -106,6 +112,27 @@ public final class BtoneC implements ClientModInitializer {
                     LOG.info("btone-mod-c: pauseOnLostFocus disabled");
                 } catch (Throwable t) {
                     LOG.warn("btone-mod-c: could not disable pauseOnLostFocus", t);
+                }
+
+                // Now that the client is running, Meteor's Modules registry is
+                // populated. Register our custom modules.
+                if (meteorPresent) {
+                    try {
+                        Class<?> modulesCls = Class.forName(
+                                "meteordevelopment.meteorclient.systems.modules.Modules");
+                        Object modulesInstance = modulesCls.getMethod("get").invoke(null);
+                        if (modulesInstance == null) {
+                            LOG.warn("meteor Modules.get() still null at CLIENT_STARTED; skipping");
+                        } else {
+                            var addMethod = modulesCls.getMethod("add", Class.forName(
+                                    "meteordevelopment.meteorclient.systems.modules.Module"));
+                            addMethod.invoke(modulesInstance,
+                                    new com.btone.c.meteor.RunAwayFromDanger());
+                            LOG.info("registered meteor module: run-away-from-danger");
+                        }
+                    } catch (Throwable modErr) {
+                        LOG.warn("failed to register custom meteor module(s): {}", modErr.toString());
+                    }
                 }
             });
 
