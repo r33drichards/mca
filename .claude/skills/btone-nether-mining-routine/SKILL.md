@@ -90,16 +90,23 @@ rpc "{\"method\":\"baritone.goto\",\"params\":{\"x\":$((PX+5)),\"y\":$PY,\"z\":$
 # 1c. Fire unbounded mine
 rpc '{"method":"baritone.mine","params":{"blocks":["minecraft:blackstone","minecraft:basalt"],"quantity":-1}}'
 
-# 1d. Poll until FREE <= 2 or HP=0. Print only on changes.
+# 1d. Poll until inventory full / HP=0 / pickaxe broke. Print only on changes.
+# Note jq syntax: separate calls per field — jq parses `(.x - 478)` as a
+# parser error in some contexts; cleaner to extract each value with its own
+# `jq -r` invocation.
 LAST=""
 while true; do
-  STAT=$(rpc '{"method":"player.inventory"}' | jq -c '{free: 36 - (.result.main | length), bs: ([.result.main[] | select(.id == "minecraft:blackstone") | .count] | add // 0), ba: ([.result.main[] | select(.id == "minecraft:basalt") | .count] | add // 0)}')
+  USED=$(rpc '{"method":"player.inventory"}' | jq -r '.result.main | length')
+  PICKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("pickaxe"))] | length')
   HP=$(rpc '{"method":"player.state"}' | jq -r '.result.health')
-  CUR="$STAT hp=$HP"
+  CUR="used=$USED picks=$PICKS hp=$HP"
   [ "$CUR" != "$LAST" ] && { echo "$(date +%H:%M:%S) $CUR"; LAST=$CUR; }
-  FREE=$(echo "$STAT" | jq -r .free)
-  [ "$FREE" -le 2 ] 2>/dev/null && break
-  [ "$HP" = "0.0" ] && break  # → goto Death recovery section
+  [ "$USED" -ge 34 ] 2>/dev/null && { echo "INVENTORY FULL"; break; }
+  [ "$HP" = "0.0" ] && { echo "DEAD → death-recovery"; break; }
+  # CRITICAL: pickaxe broke mid-cycle. Without it the bot punches blocks with
+  # bare hands — ~10× slower and damages the bot's hands. Abort the cycle and
+  # go re-up (Step 2 STORE → Step 3 RESUPPLY → Step 1 again).
+  [ "$PICKS" = "0" ] && { echo "PICKAXE BROKE → store + resupply"; break; }
   sleep 6
 done
 ```
@@ -172,7 +179,8 @@ echo "pickaxes=$PICK_COUNT food=$FOOD_COUNT armor=$ARMOR_COUNT"
 ```
 
 Resupply triggers:
-- `pickaxes < 1` OR user explicitly says durability low → grab from chest wall
+- `pickaxes < 3` (target: 1 in hand + 2 spares so a single break doesn't end the run) → grab from chest wall
+- `pickaxes == 0` mid-mine — the MINE poll loop breaks on this; don't try to keep mining bare-handed
 - `food < 16` → restock from food barrel or craft bread
 - `armor < 4` → grab from chest wall (auto-armor equips)
 
@@ -221,15 +229,21 @@ sleep 0.5
 # Currently: diamond_pickaxe + full diamond armor set live ONLY at the loot wall.
 # Skip this stop entirely if pickaxe count is OK and armor is full.
 PICKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id == "minecraft:diamond_pickaxe")] | length')
-if [ "$PICKS" -lt 2 ]; then
+TARGET_PICKS=3
+if [ "$PICKS" -lt "$TARGET_PICKS" ]; then
   rpc '{"method":"baritone.goto","params":{"x":567,"y":67,"z":911}}'
-  # wait
+  # wait until baritone idle, then approach the chest
   rpc '{"method":"container.open","params":{"x":568,"y":66,"z":910}}'
   sleep 1.5
-  STATE=$(rpc '{"method":"container.state"}')
-  SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.id == "minecraft:diamond_pickaxe")][0].slot // empty')
-  [ -n "$SLOT" ] && rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}"
-  sleep 0.3
+  # Pull picks one at a time; chest state changes after each so re-read it.
+  while [ "$PICKS" -lt "$TARGET_PICKS" ]; do
+    STATE=$(rpc '{"method":"container.state"}')
+    SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.id == "minecraft:diamond_pickaxe")][0].slot // empty')
+    [ -z "$SLOT" ] && { echo "no more diamond_pickaxe in this chest"; break; }
+    rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
+    sleep 0.3
+    PICKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id == "minecraft:diamond_pickaxe")] | length')
+  done
   rpc '{"method":"container.close"}'
 fi
 # auto-armor module equips armor within ~1s
