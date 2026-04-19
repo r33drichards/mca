@@ -106,7 +106,7 @@ Spelled out fully in [`mod-c/SMOKE.md`](mod-c/SMOKE.md). One-line summary:
 
 | Group | Methods |
 |---|---|
-| **player** | `state`, `inventory`, `equipped`, `respawn` |
+| **player** | `state`, `inventory`, `equipped`, `respawn`, `pillar_up {block?, target_y, max_ticks?}` |
 | **world (read)** | `block_at`, `blocks_around` (≤r 8), `raycast` |
 | **world (write)** | `mine_block`, `place_block`, `use_item`, `interact_entity` |
 | **world (vision)** | `screenshot {yaw?, pitch?, width?, includeHud?}`, `screenshot_panorama {angles: 4|6|8}` |

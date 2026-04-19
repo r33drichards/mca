@@ -21,6 +21,33 @@ public final class PlayerHandlers {
         r.register("player.inventory", inventory());
         r.register("player.equipped", equipped());
         r.register("player.respawn", respawn());
+        r.register("player.pillar_up", pillarUp());
+    }
+
+    /**
+     * Pillar up to a target Y by holding jump + use while looking down.
+     * params: { block?: string (default "minecraft:basalt"),
+     *           target_y: int,
+     *           max_ticks?: int (default 200 = ~10s) }
+     * Blocks the HTTP thread until the tick task finishes (target reached,
+     * timeout, or no block in hotbar). The actual stuff runs on the client
+     * tick thread; we only wait here.
+     */
+    private static RpcHandler pillarUp() {
+        return params -> {
+            String block = params.has("block") ? params.get("block").asText() : "minecraft:basalt";
+            int targetY = params.get("target_y").asInt();
+            int maxTicks = params.has("max_ticks") ? params.get("max_ticks").asInt() : 200;
+            try {
+                return PillarUpTask.submit(block, targetY, maxTicks)
+                        .get(60_000, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException te) {
+                ObjectNode n = M.createObjectNode();
+                n.put("ok", false);
+                n.put("reason", "rpc_timeout_60s");
+                return n;
+            }
+        };
     }
 
     private static RpcHandler respawn() {
