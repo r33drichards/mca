@@ -40,6 +40,29 @@ for m in auto-eat auto-armor auto-tool auto-weapon auto-replenish kill-aura; do
 done
 ```
 
+### Why each Meteor module — and how to find new ones
+
+| Module | What it does for the bot |
+|---|---|
+| `auto-eat` | Eats food from hotbar/offhand when food bar drops. Required for unattended runs. |
+| `auto-armor` | Pulls armor pieces from main inventory into slots 36-39. The reason "grab any armor and let auto-armor equip it" works. |
+| `auto-tool` | Switches to the best hotbar tool for whatever block the bot is breaking. Mines blackstone with the diamond pickaxe even if a stone pickaxe is selected. |
+| `auto-weapon` | Same as auto-tool but for hostile mobs. Combined with kill-aura, the bot fights back with the best sword in hotbar. |
+| `auto-replenish` | When a hotbar stack empties or a hotbar tool breaks, pulls another of the same item id from main inventory into that slot. **Lets the bot keep mining even when its first pickaxe shatters** — as long as a spare is anywhere in main inventory. |
+| `kill-aura` | Auto-attacks hostile mobs in range. Pairs with auto-weapon. |
+
+When the bot needs a new background behavior, scan `meteor.modules.list`
+for it before writing custom RPC logic:
+
+```bash
+rpc '{"method":"meteor.modules.list"}' | jq -r '.result.modules[]' | grep -i KEYWORD
+```
+
+Examples of useful searches: `tool`, `hotbar`, `replenish`, `inv`, `armor`,
+`eat`, `swap`, `aura`. If a module exists, prefer enabling it over scripting
+the same behavior with `container.click` / `player.inventory` polling — the
+module runs every tick on the client, the script polls every few seconds.
+
 ## Step 1: MINE
 
 Walk to the nearest portal, transit, mine until inventory is near full.
