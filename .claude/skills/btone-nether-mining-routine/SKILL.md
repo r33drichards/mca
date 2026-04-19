@@ -77,6 +77,18 @@ done
 # kill-aura to swing while moving.
 rpc '{"method":"meteor.module.setting_set","params":{"name":"kill-aura","setting":"range","value":"6.0"}}'
 rpc '{"method":"meteor.module.setting_set","params":{"name":"kill-aura","setting":"pause-baritone","value":"false"}}'
+# kill-aura.weapon=Any lets the bot attack with WHATEVER is currently in hand
+# — sword > axe > pickaxe > shovel > bare hand. Without this, kill-aura skips
+# attacks when no sword is selected, and the bot stands there taking magma-cube
+# hits with a pickaxe in hand. With "Any", every selectable tool gets used,
+# and auto-weapon (below) handles the swap to the highest-damage tool.
+rpc '{"method":"meteor.module.setting_set","params":{"name":"kill-aura","setting":"weapon","value":"Any"}}'
+# auto-weapon.weapon=Sword tells the module to swap to a sword (any tier) when
+# kill-aura engages. If no sword is in hotbar, it falls through to the next-best
+# weapon in hand-priority (axe → pickaxe → shovel → fist). Setting names are
+# strict — `prefer-sword` / `preferred-weapon` / `swap-axe` are NOT valid keys
+# (verified 2026-04-19). Only `weapon` works.
+rpc '{"method":"meteor.module.setting_set","params":{"name":"auto-weapon","setting":"weapon","value":"Sword"}}'
 # safe-walk is a footgun: it freezes the bot on narrow nether platforms.
 # Don't enable it broadly — toggle on only when you specifically need
 # edge-sneak protection, and toggle off before pathing through tight spots.
@@ -382,6 +394,8 @@ Resupply triggers:
 - `pickaxes == 0` mid-mine — the MINE poll loop breaks on this; don't try to keep mining bare-handed
 - `food < 16` → restock from primary chest first, then Warehouse 1 (`454-463, 71-76, 825-836`) which has lots of `rotten_flesh` that the auto-eat blacklist now accepts
 - `armor < 4` → grab from chest wall (auto-armor equips)
+- **`sword == 0` → MANDATORY before any nether re-entry.** Magma cubes do massive knockback and per-hit damage; without a sword in hotbar, kill-aura's bare-fist strikes can't out-damage the cube before it pushes the bot off a ledge. Confirmed 2026-04-19: bot died "doomed to fall by Magma Cube" at (73, 57, 141) on a sword-less RESUPPLY cycle. The loot-wall iron-pickaxe chest does NOT carry swords reliably — fall back to the primary chest at `(437, 68, 847)` which holds iron_sword stacks per `coords.md`.
+- **`planks < 11` → MANDATORY for any nether trip.** Without ≥11 planks, the "Your Items Are Safe" mod can't absorb a death and the bot loses everything (3 picks + full armor + food = ~5 min of crafting + 2 transits to replace). Craft from birch_log if no chest carries planks: `birch_log → 4 planks` is one shapeless craft per log, so 3 logs = 12 planks. Death insurance worked at the same (73, 57, 141) death — items recovered intact at coords with `Your items are safe` chat line.
 
 ### 3a. Pickaxe / armor / food — primary chest first, loot wall as fallback
 
@@ -711,6 +725,7 @@ If items are unrecoverable, jump straight back to RESUPPLY.
 | First `container.click` after `container.open` silently no-ops (subsequent clicks work) | GUI sync with server not complete at the moment of first interaction; the 0.15-0.2s inter-click sleep is too short to absorb the initial populate | Sleep ≥1.3s after `container.open` before the FIRST click. Between clicks, 0.4-0.6s is reliable; 0.15s is a 5% no-op risk. Symptom: open → 5× QUICK_MOVE → close → inventory unchanged. Confirmed 2026-04-19 against the loot wall. |
 | After nether transit, `baritone.mine` reports `started:true count:N async:true` but `baritone.status.active` stays false and bot never moves | Baritone internal goal queue didn't fully reset across dim transition — it holds a stale goal from before the portal that new commands don't displace | `baritone.stop` → re-send `allowBreak/allowParkour/allowPlace/allowSprint` config → re-fire `baritone.mine`. The config-replay is the load-bearing step; stop alone wasn't enough. Confirmed 2026-04-19 at (64,93,106) in nether, ~2 min after overworld→nether transit. **NOT just a post-transit thing:** same symptom also hit at (36,32,120) mid-run after 5+ min of continuous mining with no dim flips. Treat the reset cadence as "apply on EVERY `baritone.mine` re-fire", not "apply once after transit". |
 | Only stone pickaxes available at the loot wall (no diamond) | Loot wall stock drains over time; `coords.md` snapshot may be stale | **Craft iron pickaxes instead.** Warehouse 1 center-row chests at **`(459-460, 72-74, 831)`** hold ~3967 iron_block + 1337 birch_log (see `coords.md` "Iron + wood stash"). Walk to warehouse, grab iron_block + birch_log, walk to the `crafting_table` at `(462, 70, 840)`, craft planks → sticks → iron_pickaxe (3 iron + 2 sticks each), deposit spares at the loot wall chests so future RESUPPLY finds them. Iron durability = 251 (nearly 2× stone). Still usable: the loot wall has stone_pickaxe as emergency fallback (5 × 131 = 655 blocks per resupply trip). |
+| Bot stuck in a small air pocket in the nether (can't `baritone.goto`, can't `baritone.mine`, can't `player.pillar_up`) | Basalt fills most directions around the bot; Baritone refuses to break through with `allowBreak=true` when surrounded by lava/magma neighbors (safety heuristics win). `pillar_up` fails because the bot's hotbar is full of pickaxes — no basalt in hotbar to place. `world.mine_block` only breaks 1 tick and doesn't continuously mine. | **Options, in order of severity:** (1) If the bot carries basalt in main inventory, free a hotbar slot (drop one pickaxe via `player.drop` if the RPC exists) + move basalt into that slot — but mod-c currently has no in-inventory swap RPC, and auto-replenish only moves same-id items. (2) Let the bot die: walk it into lava via repeated `baritone.goto` short hops in the direction of the nearest magma, then death-recovery from overworld spawn. Loses inventory unless planks absorb it. (3) Wait for user intervention: they can break a basalt block manually from their MC client to open an escape route. Confirmed stuck at (56, 95, 95) on 2026-04-19 — bot had 5 stone picks + 9 basalt + food/armor, fully functional but pinned by terrain. TODO: add a `player.inv_swap src_slot dst_slot` RPC to mod-c to unblock pillar_up, OR a `baritone.command force_escape` that ignores lava-avoidance. |
 
 ## Event monitors — surface bot state into the agent's context
 
@@ -814,6 +829,45 @@ Monitor("Inventory free-slot transitions (alert when ≤2)"):
     sleep 15
   done
   persistent: true, timeout: 3600000
+
+# Sword-in-HOTBAR (alert on first observation if missing, AND on transitions)
+# Tags: HOTBAR_SWORD_MISSING (count=0), HOTBAR_SWORD_ACQUIRED (count went up)
+# CRITICAL: filter is `slot < 9` (hotbar only), NOT just any inv slot. A sword
+# in main inventory (slots 9-35) is INVISIBLE to auto-weapon and kill-aura —
+# they only swap from hotbar. So a sword sitting at slot 30 doesn't help the
+# bot fight; it has to be in 0-8 for combat to use it. Verified 2026-04-19.
+# **ALSO: this monitor emits on FIRST observation if missing**, not just on
+# transitions. The bot is often in a "no sword in hotbar" state for many
+# polls in a row (sword stuck in main inv after a chest grab); a transition-
+# only filter never fires in that case. Verified 2026-04-19.
+Monitor("Sword in HOTBAR (alert on first observation if missing, and on transitions)"):
+  CFG="$HOME/btone-mc-work/config/btone-bridge.json"
+  PORT=$(jq -r .port "$CFG")
+  TOKEN=$(jq -r .token "$CFG")
+  BASE="http://127.0.0.1:$PORT"
+  LAST=-1
+  while true; do
+    COUNT=$(curl -s --max-time 5 -X POST "$BASE/rpc" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"method":"player.inventory"}' 2>/dev/null \
+      | jq -r '[.result.main[]? | select(.slot < 9 and (.id | test("sword")))] | length' 2>/dev/null || echo "null")
+    if [ -n "$COUNT" ] && [ "$COUNT" != "null" ]; then
+      if [ "$LAST" = "-1" ]; then
+        # First observation: emit immediately if missing
+        [ "$COUNT" = "0" ] && echo "HOTBAR_SWORD_MISSING hotbar_count=0 (initial)"
+        LAST=$COUNT
+      elif [ "$COUNT" != "$LAST" ]; then
+        TAG="HOTBAR_SWORD_CHANGE"
+        [ "$COUNT" = "0" ] && TAG="HOTBAR_SWORD_MISSING"
+        [ "$COUNT" -gt "$LAST" ] 2>/dev/null && TAG="HOTBAR_SWORD_ACQUIRED"
+        echo "$TAG hotbar_count=$COUNT (was $LAST)"
+        LAST=$COUNT
+      fi
+    fi
+    sleep 30
+  done
+  persistent: true, timeout: 3600000
 ```
 
 Why these specific filters:
@@ -855,6 +909,8 @@ Why these specific filters:
 | `INV_FULL free≤2` | **Same as PICKAXE_CRITICAL** — stop mining, path to portal, STORE. |
 | `INV_LOW free≤5` | Log it. Consider wrapping up current mining pass. |
 | `INV_DRAINED` | Log it. Confirms STORE worked. |
+| `HOTBAR_SWORD_MISSING hotbar_count=0` | NOT a return trigger by itself, but the bot is now combat-blind: a sword in main inventory slots 9-35 doesn't count — auto-weapon can't see it. Action: open the nearest chest GUI (or any container) and SWAP the sword from main inv into hotbar slot 0. If no sword anywhere, treat the same as PICKAXE_CRITICAL and return to portal for full RESUPPLY (sword + planks). |
+| `HOTBAR_SWORD_ACQUIRED hotbar_count=N` | Log it. Confirms a sword landed in the hotbar — combat is now functional. |
 
 Do not `PushNotification` for routine single events (one flee, one
 PICKAXE_LOW); DO push on compound situations (cascading flees + low HP,
@@ -933,3 +989,25 @@ as you hit new ones; prune as they get fixed.
   productive position on USED growth, delete on death). That's ~10 lines
   and could live inside a dedicated `spot-file` Monitor that polls every
   30s. Simplifying the loop would cut the skill by ~50 lines.
+- **2026-04-19 — Death recovery walk is HIGH-RISK in the same area that
+  killed the bot.** Bot died at (73, 57, 141) to magma cube. On recovery
+  walk back, died AGAIN at (71, 57, 148) to a Wither Skeleton — same
+  general region. Recovery created a SECOND items-safe stash at the new
+  coords. Two stashes to recover from now. Lessons:
+  (a) **Wooden sword is not enough** for deep nether (y<70). Wither
+  skeletons one/two-shot a wooden-armed bot. Mandate iron+ sword on
+  recovery walks.
+  (b) The death zone often has SKELETONS + MAGMA CUBES + lava — bot needs
+  full diamond/netherite armor + totem to survive.
+  (c) Consider abandoning items if recovery cost exceeds replacement: a
+  netherite pick is irreplaceable until we mine ancient_debris ourselves,
+  but iron picks + golden carrots can be re-collected from chests.
+  (d) Items DO persist at safe-stash coords across many cycles per the
+  "Your Items Are Safe" mod — no rush. Better to come back well-geared.
+- **2026-04-19 — Primary chest at (437, 68, 847) holds ~3 netherite_pickaxe
+  + 4 iron_pickaxe + 9 stacks golden_carrot.** Coords.md snapshot from
+  2026-04-18 said only stone_pickaxe + iron_shovel — current state has
+  netherite picks, the rare pickaxe upgrade. Grab from here BEFORE the
+  loot wall on RESUPPLY: netherite has 2031 durability vs iron 251 vs
+  stone 131. Netherite picks should make a single mining run last 5-15× a
+  stone-pick run — fewer return trips, less time outside the chest area.

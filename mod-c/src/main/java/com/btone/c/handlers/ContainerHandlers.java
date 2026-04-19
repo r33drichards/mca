@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
+import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
@@ -21,6 +22,23 @@ public final class ContainerHandlers {
     private ContainerHandlers() {}
 
     public static void registerAll(RpcRouter r) {
+        // Open the player's own inventory screen — no chest/block needed.
+        // Required for SWAP-mode container.click against player main inventory
+        // when no nearby container exists (e.g. mid-nether sword-into-hotbar fix).
+        // After this returns, container.state shows the player inventory layout:
+        //   slot 0: crafting output, 1-4: 2x2 craft grid, 5-8: armor slots,
+        //   slot 45: offhand, slots 9-35: main inv, slots 36-44: hotbar.
+        // SWAP a main-inv stack into hotbar slot K with: click slot=N, button=K, mode=SWAP.
+        r.register("container.open_inventory", params -> ClientThread.call(1_000, () -> {
+            var mc = MinecraftClient.getInstance();
+            if (mc.player == null) {
+                throw new IllegalStateException("no_player");
+            }
+            mc.setScreen(new InventoryScreen(mc.player));
+            ObjectNode n = M.createObjectNode();
+            n.put("opened", true);
+            return n;
+        }));
         r.register("container.open", params -> ClientThread.call(3_000, () -> {
             int x = params.get("x").asInt();
             int y = params.get("y").asInt();
