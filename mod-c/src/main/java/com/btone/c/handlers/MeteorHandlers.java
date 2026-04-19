@@ -53,6 +53,39 @@ public final class MeteorHandlers {
             n.put("active", require().isActive(name));
             return n;
         });
+
+        // ----- settings: list / get / set -----
+        // Background: Meteor's `.setting <module> <setting> <value>` chat
+        // command silently fails when sent through chat.send (output goes to
+        // Meteor's UI overlay, not vanilla chat — no programmatic readback).
+        // These RPCs hit Meteor's Setting.parse(String) and Setting.get()
+        // directly via reflection, so the agent can configure modules
+        // without GUI interaction.
+        r.register("meteor.module.settings_list", params -> {
+            String name = params.get("name").asText();
+            ObjectNode root = M.createObjectNode();
+            root.put("name", name);
+            var arr = root.putArray("settings");
+            for (String s : require().listSettings(name)) arr.add(s);
+            return root;
+        });
+        r.register("meteor.module.setting_get", params -> {
+            String name = params.get("name").asText();
+            String setting = params.get("setting").asText();
+            ObjectNode n = M.createObjectNode();
+            n.put("name", name);
+            n.put("setting", setting);
+            n.put("value", require().getSetting(name, setting));
+            return n;
+        });
+        r.register("meteor.module.setting_set", params -> {
+            String name = params.get("name").asText();
+            String setting = params.get("setting").asText();
+            String value = params.get("value").asText();
+            ObjectNode n = M.createObjectNode();
+            n.put("ok", require().setSetting(name, setting, value));
+            return n;
+        });
     }
 
     private static MeteorFacade require() {

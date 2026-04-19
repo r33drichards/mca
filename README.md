@@ -113,7 +113,7 @@ Spelled out fully in [`mod-c/SMOKE.md`](mod-c/SMOKE.md). One-line summary:
 | **chat** | `send {text}` (auto-routes `/`-prefix to `sendChatCommand`), `recent {n}` |
 | **container** | `open {x,y,z}`, `state`, `click {slot, button, mode}`, `close` |
 | **baritone** | `goto {x?,y?,z?}`, `stop`, `status`, `mine {blocks:[...], quantity}`, `follow {entityName}`, `get_to_block {blockId}`, `thisway {distance}`, `command {text}`, `setting`, `setting_get` |
-| **meteor** | `modules.list`, `module.enable {name}`, `module.disable {name}`, `module.toggle {name}` |
+| **meteor** | `modules.list`, `module.enable {name}`, `module.disable {name}`, `module.toggle {name}`, `module.is_active {name}`, `module.settings_list {name}`, `module.setting_get {name, setting}`, `module.setting_set {name, setting, value}` |
 | **events** (SSE) | `GET /events` — chat, joined, disconnected, path |
 
 ## Recommended Meteor modules to enable on first launch

@@ -66,6 +66,63 @@ public final class MeteorFacade {
         return Boolean.TRUE.equals(isActive.invoke(m));
     }
 
+    /**
+     * List every setting name on a module across all SettingGroups.
+     * Settings is Iterable&lt;SettingGroup&gt;; SettingGroup is Iterable&lt;Setting&gt;.
+     * Each Setting has a public field {@code name}.
+     */
+    public List<String> listSettings(String moduleName) throws Exception {
+        Object module = moduleByName(moduleName);
+        Object settings = module.getClass().getField("settings").get(module);
+        List<String> out = new ArrayList<>();
+        for (Object group : (Iterable<?>) settings) {
+            for (Object s : (Iterable<?>) group) {
+                Object n = s.getClass().getField("name").get(s);
+                if (n instanceof String str) out.add(str);
+            }
+        }
+        return out;
+    }
+
+    /** Read current value of a module setting in toString form. */
+    public String getSetting(String moduleName, String settingName) throws Exception {
+        Object setting = settingByName(moduleName, settingName);
+        Method get = setting.getClass().getMethod("get");
+        Object val = get.invoke(setting);
+        return val == null ? null : String.valueOf(val);
+    }
+
+    /**
+     * Set a setting via Meteor's own {@code Setting.parse(String)}. Returns
+     * true if parse succeeded.
+     *
+     * For ItemListSetting (e.g. auto-eat blacklist), value is comma-separated
+     * item ids: "minecraft:spider_eye,minecraft:pufferfish".
+     * For boolean / int / double / enum settings, value is the obvious literal.
+     */
+    public boolean setSetting(String moduleName, String settingName, String value) throws Exception {
+        Object setting = settingByName(moduleName, settingName);
+        Method parse = setting.getClass().getMethod("parse", String.class);
+        Object res = parse.invoke(setting, value == null ? "" : value);
+        return res instanceof Boolean b && b;
+    }
+
+    private Object moduleByName(String name) throws Exception {
+        Method get = modulesClass.getMethod("get", String.class);
+        Object m = get.invoke(modulesInstance, name);
+        if (m == null) throw new IllegalArgumentException("no_module:" + name);
+        return m;
+    }
+
+    private Object settingByName(String moduleName, String settingName) throws Exception {
+        Object module = moduleByName(moduleName);
+        Object settings = module.getClass().getField("settings").get(module);
+        Method settingsGet = settings.getClass().getMethod("get", String.class);
+        Object setting = settingsGet.invoke(settings, settingName);
+        if (setting == null) throw new IllegalArgumentException("no_setting:" + settingName);
+        return setting;
+    }
+
     private static String nameOf(Object m) {
         // Meteor Module: `public final String name` (field), not `getName()`.
         try {
