@@ -16,6 +16,10 @@ Description: 4×5×3 wall of chests stacked in a small enclosed room near spawn.
 Location: `(449, 75, 861)` ish
 Description: Small wooden interior with bookshelves, lanterns, and an oak door. Visible from spawn looking SE.
 
+### Warehouse 2 — bot's stash drop point
+Location: **`(478, 71, 834)`** (overworld)
+Description: Where the bot returns from the Nether portal. Near the spawn area on the same wooden platform as the chest fortress. Used as the consolidated drop-off for mined materials (basalt, blackstone, etc.). Bot prefers to deposit here before heading out for another mining run so a death only loses what's in-flight.
+
 ### Glass dome greenhouse — THE villager building
 Location: `(498–554, 65–70, 919)` — large area, dome roof
 Description: Massive glass-domed greenhouse. ~50+ villagers visible (Armorers, Weaponsmiths). The chest wall is INSIDE the greenhouse along the east interior wall.
