@@ -1,9 +1,0 @@
-{
-  "name": "@btone/mcp-stdio-proxy",
-  "version": "0.1.0",
-  "description": "Bridge stdio MCP hosts to btone-mod-b's /mcp HTTP endpoint.",
-  "type": "module",
-  "bin": { "btone-mcp-stdio": "./index.mjs" },
-  "engines": { "node": ">=20" },
-  "license": "MIT"
-}
