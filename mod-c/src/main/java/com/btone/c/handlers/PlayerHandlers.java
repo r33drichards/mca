@@ -22,6 +22,61 @@ public final class PlayerHandlers {
         r.register("player.equipped", equipped());
         r.register("player.respawn", respawn());
         r.register("player.pillar_up", pillarUp());
+        r.register("player.bridge", movement(MovementTasks.Mode.BRIDGE_FLAT));
+        r.register("player.stairs_up", movement(MovementTasks.Mode.STAIRS_UP));
+        r.register("player.set_rotation", setRotation());
+    }
+
+    /**
+     * Bridge / stairs handler factory.
+     * params: { block?, direction (+x|-x|+z|-z), distance, max_ticks? }
+     */
+    private static RpcHandler movement(MovementTasks.Mode mode) {
+        return params -> {
+            String block = params.has("block") ? params.get("block").asText() : "minecraft:basalt";
+            String direction = params.get("direction").asText();
+            int distance = params.get("distance").asInt();
+            int maxTicks = params.has("max_ticks") ? params.get("max_ticks").asInt() : 400;
+            try {
+                return MovementTasks.submit(mode, block, direction, distance, maxTicks)
+                        .get(60_000, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException te) {
+                ObjectNode n = M.createObjectNode();
+                n.put("ok", false);
+                n.put("reason", "rpc_timeout_60s");
+                return n;
+            }
+        };
+    }
+
+    /**
+     * Set player rotation persistently. Same field-stomping pattern as
+     * vision (sets last* / head / body too) so the renderer doesn't
+     * interpolate the look back to the saved value.
+     * params: { yaw?: float, pitch?: float }
+     */
+    private static RpcHandler setRotation() {
+        return params -> ClientThread.call(TIMEOUT_MS, () -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            ObjectNode n = M.createObjectNode();
+            if (mc.player == null) { n.put("ok", false); n.put("reason", "no_player"); return n; }
+            float yaw = params.has("yaw") ? (float) params.get("yaw").asDouble() : mc.player.getYaw();
+            float pitch = params.has("pitch") ? (float) params.get("pitch").asDouble() : mc.player.getPitch();
+            mc.player.setYaw(yaw);
+            mc.player.setPitch(pitch);
+            mc.player.setHeadYaw(yaw);
+            mc.player.setBodyYaw(yaw);
+            mc.player.lastYaw = yaw;
+            mc.player.lastPitch = pitch;
+            mc.player.lastHeadYaw = yaw;
+            mc.player.lastBodyYaw = yaw;
+            mc.player.headYaw = yaw;
+            mc.player.bodyYaw = yaw;
+            n.put("ok", true);
+            n.put("yaw", yaw);
+            n.put("pitch", pitch);
+            return n;
+        });
     }
 
     /**

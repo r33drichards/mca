@@ -129,6 +129,9 @@ public final class BtoneC implements ClientModInitializer {
                             addMethod.invoke(modulesInstance,
                                     new com.btone.c.meteor.RunAwayFromDanger());
                             LOG.info("registered meteor module: run-away-from-danger");
+                            addMethod.invoke(modulesInstance,
+                                    new com.btone.c.meteor.PanicBoxUp());
+                            LOG.info("registered meteor module: panic-box-up");
                         }
                     } catch (Throwable modErr) {
                         LOG.warn("failed to register custom meteor module(s): {}", modErr.toString());
