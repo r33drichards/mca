@@ -63,6 +63,9 @@ log "fetching baritone-api-fabric (NOT standalone — that one over-obfuscates t
 curl -sfL -o "$WORK/mods/baritone-api-fabric-1.15.0.jar" \
     "https://github.com/cabaletta/baritone/releases/download/v1.15.0/baritone-api-fabric-1.15.0.jar"
 
+log "fetching sodium (render performance — without this MC's render thread saturates during bot mining and the server times the client out)"
+fetch_modrinth sodium "sodium"
+
 # 3. Build + copy our mod -------------------------------------------------------
 BTONE_JAR="$REPO_ROOT/mod-c/build/libs/btone-mod-c-0.1.0.jar"
 if [[ ! -f "$BTONE_JAR" ]]; then

@@ -47,17 +47,31 @@ rpc '{"method":"baritone.command","params":{"text":"set allowParkourPlace true"}
 # bumping these means baritone routes AROUND mobs instead of mining straight at them.
 rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceCoefficient 4.0"}}'
 rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceRadius 16"}}'
+# Throttle mining to keep render thread breathing room. Without this,
+# baritone tears through blocks faster than the client can save chunk
+# data (World save took 2200ms+) and the server kicks the bot for being
+# unresponsive. Higher mineGoalUpdateInterval = scan less often;
+# blocksToAvoidBreaking adds friction; smaller mineScanDroppedItems
+# reduces the cost of every iteration.
+rpc '{"method":"baritone.command","params":{"text":"set mineGoalUpdateInterval 8000"}}'
+rpc '{"method":"baritone.command","params":{"text":"set blockReachDistance 4.0"}}'
+# Mod-c also clamps viewDistance + simulationDistance to 6 at CLIENT_STARTED.
+# Combined with Sodium (modrinth, fabric 1.21.8) this keeps the render
+# thread responsive enough for the server to consider us alive.
 for m in auto-eat auto-armor auto-tool auto-weapon auto-replenish kill-aura \
          no-fall auto-totem auto-respawn auto-mend anti-hunger \
          run-away-from-danger; do
   rpc "{\"method\":\"meteor.module.enable\",\"params\":{\"name\":\"$m\"}}"
 done
 
-# kill-aura's built-in pause-baritone is exactly what we used to script
-# manually with the HP-drop watcher — flip it on and skip the watcher.
 # range=6 (default 4.5) catches fast-hopping magma cubes a tick earlier.
+# pause-baritone is intentionally OFF — it interferes with goto/mine by
+# pausing+resuming for every nearby mob, which left the bot stuttering
+# in place and never reaching its target during nether transit. Better
+# to let baritone keep moving (mob-avoidance handles it) and trust
+# kill-aura to swing while moving.
 rpc '{"method":"meteor.module.setting_set","params":{"name":"kill-aura","setting":"range","value":"6.0"}}'
-rpc '{"method":"meteor.module.setting_set","params":{"name":"kill-aura","setting":"pause-baritone","value":"true"}}'
+rpc '{"method":"meteor.module.setting_set","params":{"name":"kill-aura","setting":"pause-baritone","value":"false"}}'
 # safe-walk is a footgun: it freezes the bot on narrow nether platforms.
 # Don't enable it broadly — toggle on only when you specifically need
 # edge-sneak protection, and toggle off before pathing through tight spots.
