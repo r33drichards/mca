@@ -82,11 +82,28 @@ while true; do
   sleep 3
 done
 
-# 1b. Step a few blocks clear of the portal (else you trigger return transit)
-P=$(rpc '{"method":"player.state"}' | jq -c '.result.blockPos')
-PX=$(echo "$P" | jq -r .x); PY=$(echo "$P" | jq -r .y); PZ=$(echo "$P" | jq -r .z)
-rpc "{\"method\":\"baritone.goto\",\"params\":{\"x\":$((PX+5)),\"y\":$PY,\"z\":$((PZ+5))}}"
-# wait until baritone idle (active=false)
+# 1b. Step clear of portal — but smarter than +5/+5. We track the LAST
+# productive mining spot in a state file (cleared whenever the bot dies)
+# and pre-walk there. This avoids re-entering known-deadly areas on every
+# cycle. Origin: bot was dying repeatedly to magma cube knockback at the
+# +X ledge near the spawn portal; pre-walking far away in a known-safe
+# direction sidesteps that trap.
+SPOT_FILE="$HOME/btone-mc-work/.last-safe-mining-spot.json"
+if [ -s "$SPOT_FILE" ]; then
+  SX=$(jq -r .x "$SPOT_FILE"); SY=$(jq -r .y "$SPOT_FILE"); SZ=$(jq -r .z "$SPOT_FILE")
+  echo "pre-walking to last safe spot ($SX, $SY, $SZ)"
+else
+  # No remembered spot — push hard in a fixed safe direction (-X here,
+  # opposite from the project-specific death zone documented in coords.md).
+  P=$(rpc '{"method":"player.state"}' | jq -c '.result.blockPos')
+  PX=$(echo "$P" | jq -r .x); PY=$(echo "$P" | jq -r .y); PZ=$(echo "$P" | jq -r .z)
+  SX=$((PX-50)); SY=$PY; SZ=$((PZ-10))
+  echo "no saved spot, going -50 X to avoid the magma-cube ledge"
+fi
+rpc "{\"method\":\"baritone.goto\",\"params\":{\"x\":$SX,\"y\":$SY,\"z\":$SZ}}"
+# wait until baritone idle, then stop (so the goto doesn't fight the mine)
+sleep 12
+rpc '{"method":"baritone.stop"}'
 
 # 1c. Fire unbounded mine
 rpc '{"method":"baritone.mine","params":{"blocks":["minecraft:blackstone","minecraft:basalt"],"quantity":-1}}'
@@ -95,22 +112,49 @@ rpc '{"method":"baritone.mine","params":{"blocks":["minecraft:blackstone","minec
 # Note jq syntax: separate calls per field — jq parses `(.x - 478)` as a
 # parser error in some contexts; cleaner to extract each value with its own
 # `jq -r` invocation.
+SPOT_FILE="$HOME/btone-mc-work/.last-safe-mining-spot.json"
 LAST=""
+LAST_USED=0
 while true; do
   USED=$(rpc '{"method":"player.inventory"}' | jq -r '.result.main | length')
   PICKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("pickaxe"))] | length')
   HP=$(rpc '{"method":"player.state"}' | jq -r '.result.health')
-  CUR="used=$USED picks=$PICKS hp=$HP"
+  POS=$(rpc '{"method":"player.state"}' | jq -c '.result.blockPos')
+  CUR="used=$USED picks=$PICKS hp=$HP pos=$POS"
   [ "$CUR" != "$LAST" ] && { echo "$(date +%H:%M:%S) $CUR"; LAST=$CUR; }
+
+  # Save current pos as the last safe spot whenever inventory grows AND
+  # the bot is well above the typical fall-death floor (y >= 80). The
+  # y-floor filter is the cheap "is this area survivable" heuristic —
+  # see coords.md for project-specific safe-zone notes.
+  if [ "$USED" -gt "$LAST_USED" ]; then
+    PY=$(echo "$POS" | jq -r .y)
+    if [ "$PY" -ge 80 ] 2>/dev/null; then
+      echo "$POS" > "$SPOT_FILE"
+    fi
+    LAST_USED=$USED
+  fi
+
   [ "$USED" -ge 34 ] 2>/dev/null && { echo "INVENTORY FULL"; break; }
-  [ "$HP" = "0.0" ] && { echo "DEAD → death-recovery"; break; }
-  # CRITICAL: pickaxe broke mid-cycle. Without it the bot punches blocks with
-  # bare hands — ~10× slower and damages the bot's hands. Abort the cycle and
-  # go re-up (Step 2 STORE → Step 3 RESUPPLY → Step 1 again).
   [ "$PICKS" = "0" ] && { echo "PICKAXE BROKE → store + resupply"; break; }
+  if [ "$HP" = "0.0" ]; then
+    # Death invalidates the saved spot — clearly not safe. The next cycle
+    # will fall back to the fixed -50 X start.
+    rm -f "$SPOT_FILE"
+    echo "DEAD → death-recovery (cleared $SPOT_FILE)"
+    break
+  fi
   sleep 6
 done
 ```
+
+The state file lives at `~/btone-mc-work/.last-safe-mining-spot.json` (a
+single `{x, y, z}` object). The contract:
+- **Written** while `baritone.mine` is making progress AND the bot's y-coord
+  is above the project's documented fall-death floor.
+- **Read** at the start of the next MINE cycle to pre-walk before firing
+  `baritone.mine`.
+- **Deleted** on death so a deadly spot doesn't get re-tried.
 
 ## Step 2: STORE
 
