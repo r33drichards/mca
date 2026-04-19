@@ -50,6 +50,17 @@ rpc() { curl -s -X POST "$BASE/rpc" "${H[@]}" -d "$1"; }
   spam tends to lose items to inventory full / shift-click race conditions.
 - **Save coords for any non-obvious location** the bot reaches. Future
   agent sessions need that map.
+- **Never ask the user to physically free the bot.** If the bot is stuck
+  (basalt pocket, bedrock layer, lava trap), it's your problem to solve via
+  the RPC surface — `baritone.mine` to break adjacent blocks, `world.mine_block`
+  in a continuous loop, `world.place_block` (with the `side` param) to build
+  a staircase out, `player.pillar_up` once basalt is in the hotbar, swap items
+  via `container.open_inventory` + SWAP, or in the worst case force a death
+  by walking into lava (with planks for Your-Items-Are-Safe insurance) and
+  recover from overworld spawn. Asking the user to break a block is a
+  failure mode of the routine, not a design choice — extend mod-c and the
+  skill until the bot can self-rescue. Document each new self-rescue trick
+  in the skill's Common Failure Modes table.
 
 ## Mod-c specifics
 

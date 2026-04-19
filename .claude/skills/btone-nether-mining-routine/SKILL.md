@@ -370,6 +370,54 @@ slots. The `for $i` loop iterates to the next chest.
 
 ## Step 3: RESUPPLY (only if needed)
 
+### 3.0. CRAFT-FIRST CHECK (before walking to any chest)
+
+Scan the bot's inventory for craft-from-materials options BEFORE pathing
+to a chest. The bot frequently carries enough iron_block + log to make
+several iron pickaxes — walking back to the chest wall is wasted effort
+when the materials are already in hand. Especially valuable mid-nether
+when the bot is out of picks but stuck deep below the portal:
+crafting in-place avoids the long climb back AND the chest scan.
+
+```bash
+INV=$(rpc '{"method":"player.inventory"}' | jq -c '.result.main')
+PICKS=$(echo "$INV" | jq '[.[] | select(.id | test("pickaxe"))] | length')
+INGOTS=$(echo "$INV" | jq '[.[] | select(.id == "minecraft:iron_ingot") | .count] | add // 0')
+BLOCKS=$(echo "$INV" | jq '[.[] | select(.id == "minecraft:iron_block") | .count] | add // 0')
+STICKS=$(echo "$INV" | jq '[.[] | select(.id == "minecraft:stick") | .count] | add // 0')
+PLANKS=$(echo "$INV" | jq '[.[] | select(.id | test("planks")) | .count] | add // 0')
+LOGS=$(echo "$INV" | jq '[.[] | select(.id | test("_log")) | .count] | add // 0')
+
+# Iron-pickaxe budget: 3 ingots + 2 sticks per pick
+# Available ingots = INGOTS + BLOCKS*9 ; Sticks-equiv = STICKS + PLANKS*2 + LOGS*8
+TOTAL_INGOTS=$((INGOTS + BLOCKS * 9))
+TOTAL_STICKS=$((STICKS + PLANKS * 2 + LOGS * 8))
+PICKS_FROM_INV=$(( TOTAL_INGOTS / 3 < TOTAL_STICKS / 2 ? TOTAL_INGOTS / 3 : TOTAL_STICKS / 2 ))
+
+if [ "$PICKS" -lt 3 ] && [ "$PICKS_FROM_INV" -ge 2 ]; then
+  echo "CRAFT-FIRST: have materials for $PICKS_FROM_INV picks, skipping chest trip"
+  # If no crafting_table accessible, craft one in player 2x2 inv first:
+  #   container.open_inventory → 4 planks into slots 1-4 → QUICK_MOVE slot 0
+  # Then world.place_block to drop the table somewhere reachable, container.open it,
+  # and run the standard craft sequence (block→ingot, log→planks, planks→sticks,
+  # then iron_pickaxe via 3-ingot top + 2-stick column).
+fi
+```
+
+The crafting-table recipe (4 planks in 2x2) FITS inside the player's own
+inventory crafting grid — `container.open_inventory` exposes it. So even
+mid-nether with no chest, the bot can make a portable workbench from
+existing planks. Verified 2026-04-19 at (64, 16, 94) — bot was stuck deep
+underground with 0 picks but had 12 planks; opened inv, crafted table,
+placed it, crafted iron_pickaxes from 14 iron_block + 60 oak_log it had
+collected during that mining cycle. No long climb-out + warehouse round
+trip needed.
+
+Only fall through to the chest stops below if `PICKS_FROM_INV < 2` AND
+the bot is missing armor/sword/food too.
+
+### Resupply triggers (after the craft-first check)
+
 Check three things:
 
 ```bash
@@ -725,7 +773,8 @@ If items are unrecoverable, jump straight back to RESUPPLY.
 | First `container.click` after `container.open` silently no-ops (subsequent clicks work) | GUI sync with server not complete at the moment of first interaction; the 0.15-0.2s inter-click sleep is too short to absorb the initial populate | Sleep ≥1.3s after `container.open` before the FIRST click. Between clicks, 0.4-0.6s is reliable; 0.15s is a 5% no-op risk. Symptom: open → 5× QUICK_MOVE → close → inventory unchanged. Confirmed 2026-04-19 against the loot wall. |
 | After nether transit, `baritone.mine` reports `started:true count:N async:true` but `baritone.status.active` stays false and bot never moves | Baritone internal goal queue didn't fully reset across dim transition — it holds a stale goal from before the portal that new commands don't displace | `baritone.stop` → re-send `allowBreak/allowParkour/allowPlace/allowSprint` config → re-fire `baritone.mine`. The config-replay is the load-bearing step; stop alone wasn't enough. Confirmed 2026-04-19 at (64,93,106) in nether, ~2 min after overworld→nether transit. **NOT just a post-transit thing:** same symptom also hit at (36,32,120) mid-run after 5+ min of continuous mining with no dim flips. Treat the reset cadence as "apply on EVERY `baritone.mine` re-fire", not "apply once after transit". |
 | Only stone pickaxes available at the loot wall (no diamond) | Loot wall stock drains over time; `coords.md` snapshot may be stale | **Craft iron pickaxes instead.** Warehouse 1 center-row chests at **`(459-460, 72-74, 831)`** hold ~3967 iron_block + 1337 birch_log (see `coords.md` "Iron + wood stash"). Walk to warehouse, grab iron_block + birch_log, walk to the `crafting_table` at `(462, 70, 840)`, craft planks → sticks → iron_pickaxe (3 iron + 2 sticks each), deposit spares at the loot wall chests so future RESUPPLY finds them. Iron durability = 251 (nearly 2× stone). Still usable: the loot wall has stone_pickaxe as emergency fallback (5 × 131 = 655 blocks per resupply trip). |
-| Bot stuck in a small air pocket in the nether (can't `baritone.goto`, can't `baritone.mine`, can't `player.pillar_up`) | Basalt fills most directions around the bot; Baritone refuses to break through with `allowBreak=true` when surrounded by lava/magma neighbors (safety heuristics win). `pillar_up` fails because the bot's hotbar is full of pickaxes — no basalt in hotbar to place. `world.mine_block` only breaks 1 tick and doesn't continuously mine. | **Options, in order of severity:** (1) If the bot carries basalt in main inventory, free a hotbar slot (drop one pickaxe via `player.drop` if the RPC exists) + move basalt into that slot — but mod-c currently has no in-inventory swap RPC, and auto-replenish only moves same-id items. (2) Let the bot die: walk it into lava via repeated `baritone.goto` short hops in the direction of the nearest magma, then death-recovery from overworld spawn. Loses inventory unless planks absorb it. (3) Wait for user intervention: they can break a basalt block manually from their MC client to open an escape route. Confirmed stuck at (56, 95, 95) on 2026-04-19 — bot had 5 stone picks + 9 basalt + food/armor, fully functional but pinned by terrain. TODO: add a `player.inv_swap src_slot dst_slot` RPC to mod-c to unblock pillar_up, OR a `baritone.command force_escape` that ignores lava-avoidance. |
+| Bot stuck in a small air pocket in the nether (can't `baritone.goto`, can't `baritone.mine`, can't `player.pillar_up`) | Basalt fills most directions around the bot; Baritone refuses to break through with `allowBreak=true` when surrounded by lava/magma neighbors (safety heuristics win). `pillar_up` fails when basalt isn't in the *selected* hotbar slot, OR when ceiling above (y+2) is solid. `world.mine_block` only delivers 1 tick of attack damage per call. | **NEVER ask the user to free the bot manually.** The skill must self-rescue via RPCs. Try in order: (1) Use `container.open_inventory` + SWAP to put basalt in the *selected* hotbar slot (default 0) and pickaxe into another slot — `pillar_up` requires basalt in the bot's mainhand, not just somewhere in the hotbar. (2) Loop `world.mine_block` 30+ times against the same block to accumulate enough ticks to actually break basalt. (3) Use `world.place_block` with the new `side` param to build a horizontal escape — find any adjacent basalt face and click its UP/cardinal face to drop a placeable block in the air pocket; chain placements to stairstep upward. (4) If the bot has 12+ planks (Your-Items-Are-Safe insurance), walk it into a known lava block via repeated short-hop `baritone.goto`s — items survive at the death coords; bot respawns at overworld spawn for full RESUPPLY. Confirmed stuck pockets escaped 2026-04-19 via combinations of these tricks. |
+| Bot pinned at y=1 in the nether bedrock layer (baritone refuses any goto, pillar_up RPC times out) | Bot fell into a 1x1x2 air pocket inside the y=0–4 bedrock band. Walls = bedrock (unbreakable). Floor = bedrock. Ceiling = air going up to y=3, but the only way to gain height is auto-place under feet — and the place target intersects the bot's own bbox, so vanilla MC cancels the placement. PillarUpTask's jump+use+pitch=90 trick fails for the same reason. | **Verified 2026-04-19 at (72, 1, 93) — this is essentially a one-way trap**. All of the following were tried and failed: `baritone.goto y=99` (refuses to path through bedrock), `baritone.command tunnel` (silent no-op), `baritone allowFly true` (no effect), `player.pillar_up` (timeout, can't place into own bbox), Meteor `flight` Velocity-mode + `player.press_key jump` (no velocity change in confined space; Vanilla mode rejected by server), Meteor `air-jump`/`high-jump`/`step` (require keyboard input + room), `world.place_block` of basalt at (72, 2, 93) — intersects bot bbox, refused, `chat.send /tp` and `/kill @s` (no op perms). Even the new `container.open_inventory` SWAP can't help here — the geometry is fundamentally unbreakable from inside the pocket. The bot starves over hours; recovery requires a server-side admin teleport OR letting MC run until food runs out + 1 HP per second of starvation = ~10 min of dying. **Prevention is the only fix**: add a y-floor return trigger at y < 30 to the MINE poll (baritone.mine follows basalt veins straight down past y=30 into the bedrock danger zone — STOP and pillar up before then). |
 
 ## Event monitors — surface bot state into the agent's context
 

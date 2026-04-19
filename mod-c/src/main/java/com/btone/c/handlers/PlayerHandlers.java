@@ -25,6 +25,39 @@ public final class PlayerHandlers {
         r.register("player.bridge", movement(MovementTasks.Mode.BRIDGE_FLAT));
         r.register("player.stairs_up", movement(MovementTasks.Mode.STAIRS_UP));
         r.register("player.set_rotation", setRotation());
+        r.register("player.press_key", pressKey());
+    }
+
+    /**
+     * Press/hold/release a player input key (jump, sneak, sprint, attack, use,
+     * forward, back, left, right). Useful for triggering Meteor's Velocity-mode
+     * flight (which requires jump-key held to ascend), or for stuck-pocket
+     * escape via held jump + auto-place. params: { key, action: "press"|"release" }
+     */
+    private static RpcHandler pressKey() {
+        return params -> ClientThread.call(TIMEOUT_MS, () -> {
+            String key = params.get("key").asText();
+            String action = params.path("action").asText("press");
+            var mc = MinecraftClient.getInstance();
+            if (mc.options == null) throw new IllegalStateException("no_options");
+            net.minecraft.client.option.KeyBinding kb = switch (key) {
+                case "jump" -> mc.options.jumpKey;
+                case "sneak" -> mc.options.sneakKey;
+                case "sprint" -> mc.options.sprintKey;
+                case "attack" -> mc.options.attackKey;
+                case "use" -> mc.options.useKey;
+                case "forward" -> mc.options.forwardKey;
+                case "back" -> mc.options.backKey;
+                case "left" -> mc.options.leftKey;
+                case "right" -> mc.options.rightKey;
+                default -> throw new IllegalArgumentException("unknown_key:" + key);
+            };
+            kb.setPressed("press".equalsIgnoreCase(action));
+            ObjectNode n = M.createObjectNode();
+            n.put("key", key);
+            n.put("pressed", kb.isPressed());
+            return n;
+        });
     }
 
     /**

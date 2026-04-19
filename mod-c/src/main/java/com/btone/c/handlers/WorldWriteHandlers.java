@@ -60,12 +60,26 @@ public final class WorldWriteHandlers {
             int y = params.get("y").asInt();
             int z = params.get("z").asInt();
             String hand = params.path("hand").asText("main");
+            // Optional `side` overrides chooseSide() — useful when caller
+            // knows which face to click (e.g. UP face of a basalt floor to
+            // place a crafting_table on top). Values: up/down/north/south/east/west.
+            String sideStr = params.path("side").asText("");
             var mc = MinecraftClient.getInstance();
             if (mc.interactionManager == null || mc.player == null) {
                 throw new IllegalStateException("no_player");
             }
             BlockPos pos = new BlockPos(x, y, z);
-            Direction side = chooseSide(pos);
+            Direction side;
+            if (!sideStr.isEmpty()) {
+                Direction parsed = null;
+                for (Direction d : Direction.values()) {
+                    if (d.asString().equalsIgnoreCase(sideStr)) { parsed = d; break; }
+                }
+                if (parsed == null) throw new IllegalArgumentException("bad_side:" + sideStr);
+                side = parsed;
+            } else {
+                side = chooseSide(pos);
+            }
             aimAt(Vec3d.ofCenter(pos));
             BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(pos), side, pos, false);
             ActionResult result = mc.interactionManager.interactBlock(
@@ -74,6 +88,7 @@ public final class WorldWriteHandlers {
                     hit);
             ObjectNode n = M.createObjectNode();
             n.put("result", describeAction(result));
+            n.put("side", side.asString());
             return n;
         });
     }
