@@ -34,7 +34,15 @@ are on. Re-run after every restart — Meteor settings persist but Baritone's
 
 ```bash
 rpc '{"method":"baritone.command","params":{"text":"set allowBreak true"}}'
-rpc '{"method":"baritone.command","params":{"text":"set allowParkour false"}}'
+# Always allow parkour. Earlier we kept it off thinking it'd cause fall
+# deaths; turned out the bigger risk is bot getting STUCK on tiny ledges
+# and 1-block hops it refuses to clear. With no-fall enabled, the parkour
+# fall risk is moot.
+rpc '{"method":"baritone.command","params":{"text":"set allowParkour true"}}'
+# allowPlace + allowParkourPlace let baritone pillar-up out of holes by
+# placing a block under itself. See the btone-getting-unstuck skill.
+rpc '{"method":"baritone.command","params":{"text":"set allowPlace true"}}'
+rpc '{"method":"baritone.command","params":{"text":"set allowParkourPlace true"}}'
 # Pathfinder avoids hostile mobs more aggressively. Default coef is 1.5 / radius 8;
 # bumping these means baritone routes AROUND mobs instead of mining straight at them.
 rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceCoefficient 4.0"}}'
@@ -578,6 +586,57 @@ If items are unrecoverable, jump straight back to RESUPPLY.
 | Bot drowns at low Y in the overworld between portal and warehouse | walking through kelp forests near spawn | warehouse walk should pin Y >= 70; or set baritone `allowSwim true` and accept slower pathing |
 | Bot dies in nether to "doomed to fall by Magma Cube" repeatedly at the same ledge | mob knockback at y≥80 → 30+ block fall = lethal. mobAvoidance only helps for ROUTING; once the cube is adjacent, baritone has no reaction. | Enable Meteor `safe-walk` (sneaks at edges so knockback can't push the bot off). If the same area kills repeatedly, send the bot 50+ blocks in a different direction with `baritone.goto` before firing the next `baritone.mine`. |
 | Quick-move from chest leaves items in chest GUI but inventory empty | Race condition: `container.state` read before GUI populated. Sleep ≥1s after `container.open` before reading state. |
+
+## Event monitors — surface bot state into the agent's context
+
+The MINE poll loop is synchronous and only reports when `used`/`picks`/`hp`
+flips. Two classes of events happen mid-cycle that the agent should see
+in real time, NOT discover hours later from a log scan:
+
+1. **Flee triggers** — `RunAwayFromDanger` decides the bot is in trouble
+   and pathfinds away. If they pile up rapidly at the same coords, the
+   bot is stuck in a danger zone and the agent should intervene
+   (pillar out, change region) before HP runs out.
+2. **Deaths** — `Bot was X by Y` in chat plus `Death Coordinates`. With
+   "Your Items Are Safe" planks, knowing immediately means agent can
+   send the bot back for recovery before items expire.
+
+Arm both as persistent `Monitor` tasks at the start of the routine. Each
+matching log line lands as a `<task-notification>` in the agent's
+context, so the agent gets pinged the moment something happens — same
+mechanism the mining poll uses for its FULL/PICKS_BROKE/DEAD signals,
+but driven by the actual MC log instead of a polling loop.
+
+```
+# Flee events from RunAwayFromDanger
+Monitor("RunAwayFromDanger flee events from MC log"):
+  tail -F -n 0 /tmp/portablemc.log 2>/dev/null \
+    | grep --line-buffered -oE "Run Away From Danger\] Fleeing[^\"]*"
+  persistent: true, timeout: 3600000
+
+# Bot death events
+Monitor("Bot deaths from MC chat log"):
+  tail -F -n 0 /tmp/portablemc.log 2>/dev/null \
+    | grep --line-buffered -oE "(Bot was [a-z][^\"]*|Bot drowned[^\"]*|Death Coordinates;[^\"]*|Your items are (safe|not safe)[^\"]*)"
+  persistent: true, timeout: 3600000
+```
+
+Why these specific filters:
+- The flee filter only fires on `Fleeing` lines. Anything else (config
+  changes, info logs) gets dropped at the grep — keeps the noise down.
+- Death filter catches all four signals: cause-of-death message, death
+  coords, items-safe-yes, items-safe-no. The last two are vital — they
+  tell the agent whether to walk back for recovery (`safe`) or just
+  re-gear (`not safe`).
+- Both target `/tmp/portablemc.log` because that's where the launcher's
+  nohup'd output lands.
+
+When a flee or death event arrives, the agent should:
+- Respond to the event in context. For flees: peek at the bot's current
+  pos + HP, decide if it's a one-off or a death-loop.
+- For deaths: read death coords from chat, decide recovery vs. fresh gear.
+- DO NOT send a PushNotification for routine flees (HP > 12 single
+  event) — they're benign survival. DO push on cascading flees + low HP.
 
 ## Telemetry pattern
 
