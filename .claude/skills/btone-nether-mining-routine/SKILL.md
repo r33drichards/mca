@@ -184,6 +184,37 @@ single `{x, y, z}` object). The contract:
   `baritone.mine`.
 - **Deleted** on death so a deadly spot doesn't get re-tried.
 
+### Exhaustion + exploration
+
+When the MINE poll's `USED` count stops growing for ~3 min (~18 polls)
+while baritone is still active, the local area is exhausted. Don't keep
+spinning — the bot is just walking in circles around already-mined
+basalt. Two-step recovery:
+
+```bash
+# 1. Get the bot up high if it's deep down — open-air pillar so the
+#    relocation path isn't blocked by floors of basalt.
+PY=$(rpc '{"method":"player.state"}' | jq -r '.result.blockPos.y')
+if [ "$PY" -lt 60 ] 2>/dev/null; then
+  rpc '{"method":"player.pillar_up","params":{"block":"minecraft:basalt","target_y":90,"max_ticks":600}}'
+fi
+
+# 2. Walk 100+ blocks in a fixed direction (NW here — pick whichever
+#    is opposite the documented death zone for your project). Then
+#    re-fire baritone.mine and overwrite the spot file with the new
+#    productive coords.
+rpc '{"method":"baritone.command","params":{"text":"goto -100 95 50"}}'
+# wait for arrival, then:
+P=$(rpc '{"method":"player.state"}' | jq -c '.result.blockPos')
+echo "$P" > "$SPOT_FILE"
+rpc '{"method":"baritone.mine","params":{"blocks":["minecraft:blackstone","minecraft:basalt"],"quantity":-1}}'
+```
+
+Saving the new spot to the file is the load-bearing step: the next cycle
+will pre-walk to it directly from the portal instead of starting in the
+exhausted region. Over many cycles this naturally moves the bot's
+working area outward as nearby reserves deplete.
+
 ## Step 2: STORE
 
 Back to overworld, deposit at warehouse 2 (see `coords.md` for the project's
