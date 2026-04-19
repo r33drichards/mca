@@ -24,6 +24,10 @@ Description: Small wooden interior with bookshelves, lanterns, and an oak door. 
 Location: **TBD — to the LEFT of Warehouse 2 (likely `-X` direction).**
 Description: Per user, additional gear cache. **Action item:** next time the bot reaches Warehouse 2, take a panorama looking left (probably west / `-X`) and document Warehouse 1's exact coords + contents here. Use as secondary fallback for RESUPPLY when Warehouse 2 + the loot wall are both depleted.
 
+### Fisherman — fishing rod stash (NOT warehouse 1)
+Location: **`(412–414, 62–63, 845–847)`** — basement-level building west of Warehouse 2.
+Description: Two double-chests packed with fishing rods (54+ rods each chest at `(412, 62, 846)` and `(412, 62, 847)`). A crafting table sits at `(414, 63, 845)`. Identified during the search for Warehouse 1; turns out this is the fisherman's storage, not the warehouse. Useful if the bot ever needs a fishing rod (food source via fishing) but otherwise skip — no armor / weapons / picks / cooked food here.
+
 ### Warehouse 2 — bot's stash drop point
 Location: **`(478, 71, 834)`** (overworld)
 Description: Where the bot returns from the Nether portal. Near the spawn area on the same wooden platform as the chest fortress. Used as the consolidated drop-off for mined materials (basalt, blackstone, etc.). Bot prefers to deposit here before heading out for another mining run so a death only loses what's in-flight.
