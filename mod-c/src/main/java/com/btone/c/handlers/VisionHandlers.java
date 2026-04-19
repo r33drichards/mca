@@ -349,6 +349,16 @@ public final class VisionHandlers {
                 mc.player.setPitch(pc.savedPitch);
                 mc.player.setHeadYaw(pc.savedHeadYaw);
                 mc.player.setBodyYaw(pc.savedBodyYaw);
+                // Mirror the last* / head / body field stomp from prep.
+                // Without this, the next-tick render lerp from the override
+                // last* values back toward the restored yaw causes a visible
+                // camera spin between successive panorama frames.
+                mc.player.lastYaw = pc.savedYaw;
+                mc.player.lastPitch = pc.savedPitch;
+                mc.player.lastHeadYaw = pc.savedHeadYaw;
+                mc.player.lastBodyYaw = pc.savedBodyYaw;
+                mc.player.headYaw = pc.savedHeadYaw;
+                mc.player.bodyYaw = pc.savedBodyYaw;
             }
         } catch (Throwable ignored) {
             // Swallow — restoration must never throw past the dispatcher.
@@ -389,6 +399,18 @@ public final class VisionHandlers {
                     mc.player.setPitch(usePitch);
                     mc.player.setHeadYaw(useYaw);
                     mc.player.setBodyYaw(useYaw);
+                    // Camera rendering uses lerp(lastYaw, yaw, tickDelta) for
+                    // every angle. If we only set yaw, MC interpolates against
+                    // the OLD lastYaw and the rendered frame is a tween between
+                    // saved and override. Stomp the last* fields too so there's
+                    // nothing to interpolate from — the override frame is the
+                    // override yaw exactly.
+                    mc.player.lastYaw = useYaw;
+                    mc.player.lastPitch = usePitch;
+                    mc.player.lastHeadYaw = useYaw;
+                    mc.player.lastBodyYaw = useYaw;
+                    mc.player.headYaw = useYaw;
+                    mc.player.bodyYaw = useYaw;
                     if (mc.gameRenderer != null && mc.gameRenderer.getCamera() != null) {
                         mc.gameRenderer.getCamera().update(mc.world, mc.player, false, false, 1.0f);
                     }
