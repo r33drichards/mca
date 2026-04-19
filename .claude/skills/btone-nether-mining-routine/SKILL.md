@@ -35,7 +35,7 @@ are on. Re-run after every restart — Meteor settings persist but Baritone's
 ```bash
 rpc '{"method":"baritone.command","params":{"text":"set allowBreak true"}}'
 rpc '{"method":"baritone.command","params":{"text":"set allowParkour false"}}'
-for m in auto-eat auto-armor auto-tool auto-weapon kill-aura; do
+for m in auto-eat auto-armor auto-tool auto-weapon auto-replenish kill-aura; do
   rpc "{\"method\":\"meteor.module.enable\",\"params\":{\"name\":\"$m\"}}"
 done
 ```
@@ -223,6 +223,13 @@ a main-inventory slot (9-35), NOT the hotbar (0-8). The bot's auto-tool /
 auto-weapon Meteor modules only swap from the *hotbar*, so a pickaxe sitting
 in slot 35 is invisible to them. Symptom: `baritone.mine` reports `started`
 but the bot tries to punch blackstone with bare fists.
+
+**`auto-replenish` does the right thing for breakage** — when a hotbar
+diamond_pickaxe shatters, auto-replenish finds another diamond_pickaxe in
+main inventory and pulls it into the now-empty hotbar slot. Auto-tool then
+selects it. So the hotbar discipline below only matters for the FIRST tool
+of each kind — once any pickaxe is in slot N, future spares replenish there
+automatically.
 
 After every chest visit, pull tools into the hotbar via SWAP. SWAP requires
 a container open — easiest is to open the chest you just grabbed from before
