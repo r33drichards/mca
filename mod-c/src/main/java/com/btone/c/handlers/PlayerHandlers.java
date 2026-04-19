@@ -26,6 +26,55 @@ public final class PlayerHandlers {
         r.register("player.stairs_up", movement(MovementTasks.Mode.STAIRS_UP));
         r.register("player.set_rotation", setRotation());
         r.register("player.press_key", pressKey());
+        r.register("player.teleport", teleport());
+        r.register("player.set_velocity", setVelocity());
+    }
+
+    private static RpcHandler setVelocity() {
+        return params -> ClientThread.call(TIMEOUT_MS, () -> {
+            double vx = params.path("vx").asDouble(0);
+            double vy = params.path("vy").asDouble(0);
+            double vz = params.path("vz").asDouble(0);
+            var mc = MinecraftClient.getInstance();
+            if (mc.player == null) throw new IllegalStateException("no_player");
+            mc.player.setVelocity(vx, vy, vz);
+            mc.player.velocityModified = true;
+            ObjectNode n = M.createObjectNode();
+            n.put("set", true);
+            return n;
+        });
+    }
+
+
+    /**
+     * Force-set the client-side player position. On offline-mode Fabric
+     * servers without strict movement validation, the server accepts the
+     * resulting position packet and the bot actually teleports. On vanilla
+     * online servers with anti-cheat, the server snaps the player back to
+     * the last validated position. Use as a stuck-pocket escape when
+     * vanilla physics offers no path out (e.g. 1x1 air pocket inside
+     * the nether bedrock layer).
+     * params: { x, y, z }
+     */
+    private static RpcHandler teleport() {
+        return params -> ClientThread.call(TIMEOUT_MS, () -> {
+            double x = params.get("x").asDouble();
+            double y = params.get("y").asDouble();
+            double z = params.get("z").asDouble();
+            var mc = MinecraftClient.getInstance();
+            if (mc.player == null) throw new IllegalStateException("no_player");
+            mc.player.refreshPositionAndAngles(
+                x + 0.5, y, z + 0.5,
+                mc.player.getYaw(), mc.player.getPitch()
+            );
+            mc.player.setVelocity(0, 0, 0);
+            ObjectNode n = M.createObjectNode();
+            n.put("teleported", true);
+            n.put("x", mc.player.getX());
+            n.put("y", mc.player.getY());
+            n.put("z", mc.player.getZ());
+            return n;
+        });
     }
 
     /**
