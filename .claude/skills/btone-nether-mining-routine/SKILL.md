@@ -210,18 +210,14 @@ for piece in helmet chestplate leggings boots; do
   sleep 0.3
 done
 
-# Grab some food (target ~3 stacks of cooked fish or bread)
+# Grab ONE food stack — auto-eat only takes one item per hunger event, so 32-64
+# items is a long mining run's worth. Don't fill the inventory with food.
 FOOD_CT=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("bread|cooked_|beetroot")) | .count] | add // 0')
-TAKEN=0
-while [ "$FOOD_CT" -lt 64 ] && [ "$TAKEN" -lt 3 ]; do
+if [ "$FOOD_CT" -lt 16 ]; then
   SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.id | test("cooked_|bread|beetroot"))][0].slot // empty')
-  [ -z "$SLOT" ] && break
-  rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
-  TAKEN=$((TAKEN+1))
+  [ -n "$SLOT" ] && rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
   sleep 0.3
-  STATE=$(rpc '{"method":"container.state"}')  # refresh — slot is now empty
-  FOOD_CT=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("bread|cooked_|beetroot")) | .count] | add // 0')
-done
+fi
 rpc '{"method":"container.close"}'
 sleep 0.5
 
