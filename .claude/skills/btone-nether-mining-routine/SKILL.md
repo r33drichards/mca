@@ -39,7 +39,7 @@ rpc '{"method":"baritone.command","params":{"text":"set allowParkour false"}}'
 # bumping these means baritone routes AROUND mobs instead of mining straight at them.
 rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceCoefficient 4.0"}}'
 rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceRadius 16"}}'
-for m in auto-eat auto-armor auto-tool auto-weapon auto-replenish kill-aura; do
+for m in auto-eat auto-armor auto-tool auto-weapon auto-replenish kill-aura safe-walk; do
   rpc "{\"method\":\"meteor.module.enable\",\"params\":{\"name\":\"$m\"}}"
 done
 ```
@@ -54,6 +54,7 @@ done
 | `auto-weapon` | Same as auto-tool but for hostile mobs. Combined with kill-aura, the bot fights back with the best sword in hotbar. |
 | `auto-replenish` | When a hotbar stack empties or a hotbar tool breaks, pulls another of the same item id from main inventory into that slot. **Lets the bot keep mining even when its first pickaxe shatters** — as long as a spare is anywhere in main inventory. |
 | `kill-aura` | Auto-attacks hostile mobs in range. Pairs with auto-weapon. |
+| `safe-walk` | Sneaks the bot at block edges so mob knockback (esp. magma cubes in the nether) can't punt the bot off a ledge. **Critical for nether mining at y≥80** — without it, recurring fall-deaths at the same ledge each cycle. |
 
 When the bot needs a new background behavior, scan `meteor.modules.list`
 for it before writing custom RPC logic:
@@ -421,6 +422,7 @@ If items are unrecoverable, jump straight back to RESUPPLY.
 | `world.mine_block` returns `started:true` but block stays | one-shot attackBlock = single tick of mining damage; survival mining needs continuous breaking | use `baritone.mine` instead |
 | `container.open` returns success but `container.state` shows null/empty slots | bot too far (>~5 blocks) — open didn't actually fire server-side | `baritone.goto` adjacent, retry |
 | Bot drowns at low Y in the overworld between portal and warehouse | walking through kelp forests near spawn | warehouse walk should pin Y >= 70; or set baritone `allowSwim true` and accept slower pathing |
+| Bot dies in nether to "doomed to fall by Magma Cube" repeatedly at the same ledge | mob knockback at y≥80 → 30+ block fall = lethal. mobAvoidance only helps for ROUTING; once the cube is adjacent, baritone has no reaction. | Enable Meteor `safe-walk` (sneaks at edges so knockback can't push the bot off). If the same area kills repeatedly, send the bot 50+ blocks in a different direction with `baritone.goto` before firing the next `baritone.mine`. |
 | Quick-move from chest leaves items in chest GUI but inventory empty | Race condition: `container.state` read before GUI populated. Sleep ≥1s after `container.open` before reading state. |
 
 ## Telemetry pattern
