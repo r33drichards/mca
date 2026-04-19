@@ -5,9 +5,13 @@
 - **[`coords.md`](coords.md)** — concrete coordinates of buildings, hazards,
   and resource caches in the user's test world (`centerbeam.proxy.rlwy.net:40387`).
   Includes the spawn area, the wrong buildings the bot keeps confusing for
-  the right one, the chest-wall location with all the diamond gear, and the
-  bot's stash drop point ("Warehouse 2"). When the user asks the bot to go
-  somewhere named, check here first before trying to find it via panorama.
+  the right one, the chest-wall location with all the diamond gear, the
+  bot's stash drop point ("Warehouse 2"), and the **iron/wood stash** in
+  Warehouse 1's center row at `(459-460, 72-74, 831)` used to CRAFT iron
+  pickaxes (the loot wall is out of diamond picks — fall back to crafting
+  iron, recipe and crafting-table coord in `coords.md`). When the user asks
+  the bot to go somewhere named, check here first before trying to find it
+  via panorama.
 
 - **[`mod-c/SMOKE.md`](mod-c/SMOKE.md)** — the full RPC method runbook with
   curl examples for everything the bot can do.

@@ -16,10 +16,21 @@ Description: Small wooden interior with bookshelves, lanterns, and an oak door. 
 - Overworld portal: **`(480, 70, 858)`** — what `baritone.get_to_block minecraft:nether_portal` walks to from the spawn area.
 - Nether-side portal: **`(61, 99, 110)`** — bot exits here. **WARNING:** the area to +X (toward `(74, 58, 114)`) is the recurring magma-cube fall-death zone. Always pre-walk `-X` 50+ blocks before firing `baritone.mine`. See the routine's last-safe-spot mechanism for details.
 
-### Warehouse 1 — chest fortress near spawn (PRIMARY food source)
+### Warehouse 1 — chest fortress near spawn (PRIMARY food source + IRON/WOOD stash)
 Location: **`(454–463, 71–76, 825–836)`** — massive chest cluster, ~270 chests across walls. Bot interacts at the perimeter (e.g. `(458, 71, 833)`).
 Adjacent structures inside: ender_chests at `(461, 71, 832–833)` and `(461, 72, 832)`, crafting_table at `(462, 70, 840)`.
 Description: This was previously misidentified as a "chest fortress" (deleted entry). It IS Warehouse 1. Wide variety of items expected here — primary place to find FOOD when Warehouse 2 / lmoik's chest are depleted. Also notable: **rotten_flesh** stockpiles work fine as bot food now (auto-eat blacklist updated to allow it 2026-04-18).
+
+**Structure:** Warehouse 1 has THREE rows of chests along X: row 1 at x=454–455 (west wall), row 2 (CENTER aisle) at x=459–460, row 3 at x=462–463 (east wall). The **center row (x=459–460)** holds the crafting stockpiles — iron_block, birch_log, etc. The east/west walls are general storage.
+
+#### Iron + wood stash — center row, z=831 (for crafting iron pickaxes)
+**Verified 2026-04-19.** Three stacked double-chests, each spans x=459–460 (opening either half shows both):
+
+- **`(459-460, 72, 831)`** — 532 iron_block + 84 birch_log (mixed with sand, wool).
+- **`(459-460, 73, 831)`** — 1508 iron_block + 466 birch_log.
+- **`(459-460, 74, 831)`** — 1927 iron_block + 787 birch_log (biggest).
+
+Total stash: **~3967 iron_block + 1337 birch_log** across the three chests — enough for thousands of iron pickaxes. Recipe: 1 iron_block → 9 iron_ingot; 1 iron_pickaxe = 3 iron_ingot + 2 sticks. 1 birch_log → 4 planks → 8 sticks (via 2 planks → 4 sticks).
 
 ### Fisherman — fishing rod stash (NOT warehouse 1)
 Location: **`(412–414, 62–63, 845–847)`** — basement-level building west of Warehouse 2.

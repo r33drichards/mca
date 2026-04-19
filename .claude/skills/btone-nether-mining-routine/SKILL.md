@@ -59,10 +59,15 @@ rpc '{"method":"baritone.command","params":{"text":"set blockReachDistance 4.0"}
 # Combined with Sodium (modrinth, fabric 1.21.8) this keeps the render
 # thread responsive enough for the server to consider us alive.
 for m in auto-eat auto-armor auto-tool auto-weapon auto-replenish kill-aura \
-         no-fall auto-totem auto-respawn auto-mend anti-hunger \
+         auto-totem auto-respawn auto-mend anti-hunger \
          run-away-from-danger; do
   rpc "{\"method\":\"meteor.module.enable\",\"params\":{\"name\":\"$m\"}}"
 done
+# DO NOT enable no-fall: it cancels fall packets and baritone interprets
+# that as "we can't descend safely," refusing to drop down even short
+# ledges. Bot got pinned at portal-level y=99 trying to walk between
+# nether overhangs because of this. Survival fall protection comes from
+# auto-totem + auto-armor instead.
 
 # range=6 (default 4.5) catches fast-hopping magma cubes a tick earlier.
 # pause-baritone is intentionally OFF — it interferes with goto/mine by
@@ -109,7 +114,29 @@ module runs every tick on the client, the script polls every few seconds.
 
 ## Step 1: MINE
 
-Walk to the nearest portal, transit, mine until inventory is near full.
+Walk to the nearest portal, transit, mine until one of the two return
+triggers fires.
+
+### Return-to-portal triggers (THE TWO)
+
+The MINE phase ends when — and only when — one of these two events fires:
+
+1. **`PICKAXE_CRITICAL picks=1`** — pickaxe count drops to 1. One more
+   break and the bot is punching basalt with fists.
+2. **`INV_FULL free≤2`** — inventory has 2 or fewer free slots. Further
+   mined blocks despawn on the ground.
+
+Both are delivered as `<task-notification>` events from the persistent
+Monitors armed in the Event Monitors section. On either event, the agent
+(or this poll loop) must:
+
+```
+baritone.stop → baritone.goto nether_portal → traverse → STORE → RESUPPLY
+```
+
+HP-based triggers (death, low-HP flee cluster) are handled by the
+separate death/flee monitors and route through the Death Recovery path,
+not through STORE.
 
 ```bash
 # 1a. Walk to portal (works in either dim — gets the dim-local portal)
@@ -154,12 +181,15 @@ rpc '{"method":"baritone.mine","params":{"blocks":["minecraft:blackstone","minec
 SPOT_FILE="$HOME/btone-mc-work/.last-safe-mining-spot.json"
 LAST=""
 LAST_USED=0
+LAST_POS=""
+STUCK=0       # consecutive polls with identical pos
+KICKS=0       # how many "shake the bot loose" recoveries we've done
 while true; do
   USED=$(rpc '{"method":"player.inventory"}' | jq -r '.result.main | length')
   PICKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("pickaxe"))] | length')
   HP=$(rpc '{"method":"player.state"}' | jq -r '.result.health')
   POS=$(rpc '{"method":"player.state"}' | jq -c '.result.blockPos')
-  CUR="used=$USED picks=$PICKS hp=$HP pos=$POS"
+  CUR="used=$USED picks=$PICKS hp=$HP pos=$POS stuck=$STUCK"
   [ "$CUR" != "$LAST" ] && { echo "$(date +%H:%M:%S) $CUR"; LAST=$CUR; }
 
   # Save current pos as the last safe spot whenever inventory grows AND
@@ -186,7 +216,34 @@ while true; do
     echo "DEAD → death-recovery (cleared $SPOT_FILE)"
     break
   fi
-  sleep 6
+
+  # Stuck detection. baritone.mine sometimes deadlocks against a wall it
+  # won't break, runs out of in-range targets, or just gives up silently
+  # without flipping baritone.status.active=false. Symptom: pos identical
+  # for many polls in a row. After ~40s (4 polls × ~10s each), nudge the
+  # bot 15 blocks in an alternating direction and re-fire mine. Bail
+  # after 3 kicks — at that point assume the local area is exhausted and
+  # fall through to the next iteration's exhaustion + exploration logic.
+  if [ "$POS" = "$LAST_POS" ]; then STUCK=$((STUCK+1)); else STUCK=0; LAST_POS=$POS; fi
+  if [ $STUCK -ge 4 ]; then
+    KICKS=$((KICKS+1))
+    PX=$(echo "$POS" | jq -r .x); PY=$(echo "$POS" | jq -r .y); PZ=$(echo "$POS" | jq -r .z)
+    if [ $((KICKS % 2)) = 0 ]; then NX=$((PX-15)); else NX=$((PX+15)); fi
+    echo "$(date +%H:%M:%S) STUCK kick #$KICKS → goto ($NX,$PY,$PZ), then re-mine"
+    rpc '{"method":"baritone.stop"}' >/dev/null
+    sleep 0.5
+    rpc "{\"method\":\"baritone.goto\",\"params\":{\"x\":$NX,\"y\":$PY,\"z\":$PZ}}" >/dev/null
+    for j in $(seq 1 8); do
+      A=$(rpc '{"method":"baritone.status"}' | jq -r '.result.active')
+      [ "$A" = "false" ] && break
+      sleep 4
+    done
+    rpc '{"method":"baritone.mine","params":{"blocks":["minecraft:blackstone","minecraft:basalt"],"quantity":-1}}' >/dev/null
+    STUCK=0
+    [ $KICKS -ge 3 ] && { echo "TOO MANY KICKS — local area exhausted, bailing to STORE"; break; }
+  fi
+
+  sleep 10
 done
 ```
 
@@ -430,25 +487,45 @@ if [ "$FOOD_CT" -lt 16 ]; then
 fi
 
 # --- Backup stop: loot wall — only when primary is missing what you need ---
-# Currently: diamond_pickaxe + full diamond armor set live ONLY at the loot wall.
+# Previously: diamond_pickaxe + full diamond armor set lived ONLY at the loot wall.
+# **As of 2026-04-19 the loot wall has no diamond pickaxes left** — scan yielded
+# only stone_pickaxe + diamond_shovel. Logic below tries diamond first then
+# falls back to stone. Ambient durability is much lower (131 vs 1561) so target
+# 5+ stone picks instead of 3 diamond picks.
 # Skip this stop entirely if pickaxe count is OK and armor is full.
-PICKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id == "minecraft:diamond_pickaxe")] | length')
-TARGET_PICKS=3
-if [ "$PICKS" -lt "$TARGET_PICKS" ]; then
+TOTAL_PICKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("pickaxe"))] | length')
+# 3 diamond OR 5 stone (or a mix)
+if [ "$TOTAL_PICKS" -lt 3 ]; then
   rpc '{"method":"baritone.goto","params":{"x":567,"y":67,"z":911}}'
-  # wait until baritone idle, then approach the chest
-  rpc '{"method":"container.open","params":{"x":568,"y":66,"z":910}}'
-  sleep 1.5
-  # Pull picks one at a time; chest state changes after each so re-read it.
-  while [ "$PICKS" -lt "$TARGET_PICKS" ]; do
+  # wait until baritone idle, then scan nearby loot-wall chests for picks
+  # (don't hard-code a single chest — loot wall is a grid, pick-bearing chest
+  #  moves as chests get depleted)
+  CHESTS=$(rpc '{"method":"world.blocks_around","params":{"radius":8}}' | jq -c '.result.blocks | map(select(.id | test("chest")))')
+  N=$(echo "$CHESTS" | jq 'length')
+  for i in $(seq 0 $((N-1))); do
+    CX=$(echo "$CHESTS" | jq -r ".[$i].x"); CY=$(echo "$CHESTS" | jq -r ".[$i].y"); CZ=$(echo "$CHESTS" | jq -r ".[$i].z")
+    rpc "{\"method\":\"container.open\",\"params\":{\"x\":$CX,\"y\":$CY,\"z\":$CZ}}" >/dev/null
+    sleep 1.5  # ← first-click sync delay, see failure-modes table
     STATE=$(rpc '{"method":"container.state"}')
-    SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.id == "minecraft:diamond_pickaxe")][0].slot // empty')
-    [ -z "$SLOT" ] && { echo "no more diamond_pickaxe in this chest"; break; }
-    rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
+    # Prefer diamond, fall back to stone
+    for PICK_ID in minecraft:diamond_pickaxe minecraft:iron_pickaxe minecraft:stone_pickaxe; do
+      TARGET=$([ "$PICK_ID" = "minecraft:stone_pickaxe" ] && echo 5 || echo 3)
+      while [ "$TOTAL_PICKS" -lt "$TARGET" ]; do
+        STATE=$(rpc '{"method":"container.state"}')
+        # Chest portion only (slot < 27 for single, < 54 for double)
+        MAX=$(echo "$STATE" | jq -r '[.result.slots[]?.slot] | max // 0')
+        CHEST_SIZE=$([ "$MAX" -ge 54 ] && echo 54 || echo 27)
+        SLOT=$(echo "$STATE" | jq -r "[.result.slots[]? | select(.slot < $CHEST_SIZE and .id == \"$PICK_ID\")][0].slot // empty")
+        [ -z "$SLOT" ] && break
+        rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
+        sleep 0.5
+        TOTAL_PICKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("pickaxe"))] | length')
+      done
+    done
+    rpc '{"method":"container.close"}' >/dev/null
     sleep 0.3
-    PICKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id == "minecraft:diamond_pickaxe")] | length')
+    [ "$TOTAL_PICKS" -ge 5 ] && break
   done
-  rpc '{"method":"container.close"}'
 fi
 # auto-armor module equips armor within ~1s
 ```
@@ -631,12 +708,19 @@ If items are unrecoverable, jump straight back to RESUPPLY.
 | Bot drowns at low Y in the overworld between portal and warehouse | walking through kelp forests near spawn | warehouse walk should pin Y >= 70; or set baritone `allowSwim true` and accept slower pathing |
 | Bot dies in nether to "doomed to fall by Magma Cube" repeatedly at the same ledge | mob knockback at y≥80 → 30+ block fall = lethal. mobAvoidance only helps for ROUTING; once the cube is adjacent, baritone has no reaction. | Enable Meteor `safe-walk` (sneaks at edges so knockback can't push the bot off). If the same area kills repeatedly, send the bot 50+ blocks in a different direction with `baritone.goto` before firing the next `baritone.mine`. |
 | Quick-move from chest leaves items in chest GUI but inventory empty | Race condition: `container.state` read before GUI populated. Sleep ≥1s after `container.open` before reading state. |
+| First `container.click` after `container.open` silently no-ops (subsequent clicks work) | GUI sync with server not complete at the moment of first interaction; the 0.15-0.2s inter-click sleep is too short to absorb the initial populate | Sleep ≥1.3s after `container.open` before the FIRST click. Between clicks, 0.4-0.6s is reliable; 0.15s is a 5% no-op risk. Symptom: open → 5× QUICK_MOVE → close → inventory unchanged. Confirmed 2026-04-19 against the loot wall. |
+| After nether transit, `baritone.mine` reports `started:true count:N async:true` but `baritone.status.active` stays false and bot never moves | Baritone internal goal queue didn't fully reset across dim transition — it holds a stale goal from before the portal that new commands don't displace | `baritone.stop` → re-send `allowBreak/allowParkour/allowPlace/allowSprint` config → re-fire `baritone.mine`. The config-replay is the load-bearing step; stop alone wasn't enough. Confirmed 2026-04-19 at (64,93,106) in nether, ~2 min after overworld→nether transit. **NOT just a post-transit thing:** same symptom also hit at (36,32,120) mid-run after 5+ min of continuous mining with no dim flips. Treat the reset cadence as "apply on EVERY `baritone.mine` re-fire", not "apply once after transit". |
+| Only stone pickaxes available at the loot wall (no diamond) | Loot wall stock drains over time; `coords.md` snapshot may be stale | **Craft iron pickaxes instead.** Warehouse 1 center-row chests at **`(459-460, 72-74, 831)`** hold ~3967 iron_block + 1337 birch_log (see `coords.md` "Iron + wood stash"). Walk to warehouse, grab iron_block + birch_log, walk to the `crafting_table` at `(462, 70, 840)`, craft planks → sticks → iron_pickaxe (3 iron + 2 sticks each), deposit spares at the loot wall chests so future RESUPPLY finds them. Iron durability = 251 (nearly 2× stone). Still usable: the loot wall has stone_pickaxe as emergency fallback (5 × 131 = 655 blocks per resupply trip). |
 
 ## Event monitors — surface bot state into the agent's context
 
 The MINE poll loop is synchronous and only reports when `used`/`picks`/`hp`
-flips. Two classes of events happen mid-cycle that the agent should see
-in real time, NOT discover hours later from a log scan:
+flips. Four classes of events happen mid-cycle that the agent should see
+in real time, NOT discover hours later from a log scan.
+
+**Pickaxe (#3) and Inventory (#4) are the two MINE-phase return triggers
+— they cause `baritone.stop` + return-to-portal. Flee (#1) and Death (#2)
+do NOT trigger a return; they route through their own recovery paths.**
 
 1. **Flee triggers** — `RunAwayFromDanger` decides the bot is in trouble
    and pathfinds away. If they pile up rapidly at the same coords, the
@@ -645,12 +729,19 @@ in real time, NOT discover hours later from a log scan:
 2. **Deaths** — `Bot was X by Y` in chat plus `Death Coordinates`. With
    "Your Items Are Safe" planks, knowing immediately means agent can
    send the bot back for recovery before items expire.
+3. **Pickaxe count drop to 1** — **return-to-portal trigger.** When
+   auto-replenish can't fill the hotbar any more, the bot is one break
+   away from mining with fists. Agent must immediately `baritone.stop`
+   and path to the nether portal — don't wait for the next /loop tick.
+4. **Inventory full** — **return-to-portal trigger.** Free slots ≤ 2.
+   baritone.mine still "runs" but every new drop despawns on the ground.
+   Same response as low picks: stop mining, return to portal.
 
-Arm both as persistent `Monitor` tasks at the start of the routine. Each
-matching log line lands as a `<task-notification>` in the agent's
-context, so the agent gets pinged the moment something happens — same
-mechanism the mining poll uses for its FULL/PICKS_BROKE/DEAD signals,
-but driven by the actual MC log instead of a polling loop.
+**Arm ALL FOUR at the start of every mining routine.** Flee + death
+monitors tail the MC log; pickaxe + inventory monitors poll the HTTP
+bridge. Each emits only on state transitions, not every tick. When an
+alert arrives, the agent acts immediately — do not wait for a scheduled
+/loop fire.
 
 ```
 # Flee events from RunAwayFromDanger
@@ -664,24 +755,110 @@ Monitor("Bot deaths from MC chat log"):
   tail -F -n 0 /tmp/portablemc.log 2>/dev/null \
     | grep --line-buffered -oE "(Bot was [a-z][^\"]*|Bot drowned[^\"]*|Death Coordinates;[^\"]*|Your items are (safe|not safe)[^\"]*)"
   persistent: true, timeout: 3600000
+
+# Pickaxe count transitions (critical when drops to ≤1)
+# Tags: PICKAXE_REFILLED (count up), PICKAXE_LOW (≤2, >1), PICKAXE_CRITICAL (≤1)
+Monitor("Pickaxe count transitions (alert on drop to ≤1)"):
+  CFG="$HOME/btone-mc-work/config/btone-bridge.json"
+  PORT=$(jq -r .port "$CFG")
+  TOKEN=$(jq -r .token "$CFG")
+  BASE="http://127.0.0.1:$PORT"
+  LAST=-1
+  while true; do
+    PICKS=$(curl -s --max-time 5 -X POST "$BASE/rpc" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"method":"player.inventory"}' 2>/dev/null \
+      | jq -r '[.result.main[]? | select(.id | test("pickaxe"))] | length' 2>/dev/null || echo "null")
+    if [ -n "$PICKS" ] && [ "$PICKS" != "null" ] && [ "$PICKS" != "$LAST" ]; then
+      if [ "$LAST" != "-1" ]; then
+        TAG="PICKAXE_CHANGE"
+        [ "$PICKS" -le 1 ] 2>/dev/null && TAG="PICKAXE_CRITICAL"
+        [ "$PICKS" -le 2 ] 2>/dev/null && [ "$PICKS" -gt 1 ] 2>/dev/null && TAG="PICKAXE_LOW"
+        [ "$PICKS" -gt "$LAST" ] 2>/dev/null && TAG="PICKAXE_REFILLED"
+        echo "$TAG picks=$PICKS (was $LAST)"
+      fi
+      LAST=$PICKS
+    fi
+    sleep 15
+  done
+  persistent: true, timeout: 3600000
+
+# Inventory free-slot transitions (alert when ≤2 = effectively full)
+# Tags: INV_DRAINED (used dropped), INV_LOW (free ≤5), INV_FULL (free ≤2)
+Monitor("Inventory free-slot transitions (alert when ≤2)"):
+  CFG="$HOME/btone-mc-work/config/btone-bridge.json"
+  PORT=$(jq -r .port "$CFG")
+  TOKEN=$(jq -r .token "$CFG")
+  BASE="http://127.0.0.1:$PORT"
+  LAST=-1
+  while true; do
+    USED=$(curl -s --max-time 5 -X POST "$BASE/rpc" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"method":"player.inventory"}' 2>/dev/null \
+      | jq -r '[.result.main[]? | select(.slot < 36)] | length' 2>/dev/null || echo "null")
+    if [ -n "$USED" ] && [ "$USED" != "null" ] && [ "$USED" != "$LAST" ]; then
+      FREE=$((36 - USED))
+      if [ "$LAST" != "-1" ]; then
+        TAG="INV_CHANGE"
+        [ "$FREE" -le 5 ] 2>/dev/null && TAG="INV_LOW"
+        [ "$FREE" -le 2 ] 2>/dev/null && TAG="INV_FULL"
+        [ "$USED" -lt "$LAST" ] 2>/dev/null && TAG="INV_DRAINED"
+        case "$TAG" in
+          INV_FULL|INV_LOW|INV_DRAINED) echo "$TAG used=$USED free=$FREE (was used=$LAST)";;
+        esac
+      fi
+      LAST=$USED
+    fi
+    sleep 15
+  done
+  persistent: true, timeout: 3600000
 ```
 
 Why these specific filters:
-- The flee filter only fires on `Fleeing` lines. Anything else (config
+- **Flee** — only fires on `Fleeing` lines. Anything else (config
   changes, info logs) gets dropped at the grep — keeps the noise down.
-- Death filter catches all four signals: cause-of-death message, death
+- **Death** — catches all four signals: cause-of-death message, death
   coords, items-safe-yes, items-safe-no. The last two are vital — they
   tell the agent whether to walk back for recovery (`safe`) or just
   re-gear (`not safe`).
-- Both target `/tmp/portablemc.log` because that's where the launcher's
-  nohup'd output lands.
+- **Pickaxe** — tracks the last-seen count in shell state, emits only on
+  transitions. Tags let the agent distinguish a pick break (`CRITICAL`/
+  `LOW`) from a resupply (`REFILLED`) without inspecting the numbers.
+- **Inventory** — same transition-only pattern; drops (`INV_DRAINED`) fire
+  after a STORE deposit. Only `INV_FULL` / `INV_LOW` / `INV_DRAINED`
+  emit — ordinary "+1 basalt" events are suppressed so the 13/min
+  mining rate doesn't spam the chat.
+  **False-positive caveat (2026-04-19):** `INV_DRAINED` also fires when
+  `auto-replenish` moves a pick from main inventory to the hotbar after
+  a hotbar-pick break. Net effect on `used`: -1 (the main-inv slot
+  empties). Symptom: `INV_DRAINED used=N-1 (was used=N)` arriving paired
+  with a `PICKAXE_CHANGE picks=K-1` event. Not a real STORE. A stricter
+  filter would require the drop to be ≥5 slots to count as STORE. For
+  now the paired `PICKAXE_CHANGE` disambiguates.
+- Log monitors target `/tmp/portablemc.log` (launcher's nohup'd output).
+  Bridge monitors target the HTTP RPC via the config file.
 
-When a flee or death event arrives, the agent should:
-- Respond to the event in context. For flees: peek at the bot's current
-  pos + HP, decide if it's a one-off or a death-loop.
-- For deaths: read death coords from chat, decide recovery vs. fresh gear.
-- DO NOT send a PushNotification for routine flees (HP > 12 single
-  event) — they're benign survival. DO push on cascading flees + low HP.
+### Agent response table
+
+| Event | Action |
+|---|---|
+| `Run Away From Danger] Fleeing` (single, HP > 12) | Log it. No action — benign. |
+| `Fleeing` cluster (≥3 within 60s) OR any `Fleeing` while HP < 12 | Intervene. Peek at pos + HP, decide pillar-out vs. teleport-home. PushNotification the user. |
+| `Bot was [killed] by [mob]` | Start death recovery. Read `Death Coordinates` from chat. Walk back within 5 min for items. |
+| `Your items are safe` | Bot's planks absorbed the inventory loss. Re-gear via RESUPPLY; skip the death-coord walk. |
+| `Your items are not safe` | Items are on the ground at death coords. Walk back within 5 min or accept the loss. |
+| `PICKAXE_CRITICAL picks=1` | **`baritone.stop` → path to nether portal (goto 61,99,110) → traverse to overworld → STORE → RESUPPLY.** Do not wait for the /loop tick. |
+| `PICKAXE_LOW picks=2` | Log it. Keep mining; next break puts us critical. |
+| `PICKAXE_REFILLED picks=N` | Log it. Confirms RESUPPLY worked. |
+| `INV_FULL free≤2` | **Same as PICKAXE_CRITICAL** — stop mining, path to portal, STORE. |
+| `INV_LOW free≤5` | Log it. Consider wrapping up current mining pass. |
+| `INV_DRAINED` | Log it. Confirms STORE worked. |
+
+Do not `PushNotification` for routine single events (one flee, one
+PICKAXE_LOW); DO push on compound situations (cascading flees + low HP,
+death while far from recovery range).
 
 ## Telemetry pattern
 
@@ -696,3 +873,63 @@ while true; do
   sleep 5
 done
 ```
+
+## Open TODOs / session notes
+
+Things learned mid-run that deserve follow-up but aren't yet resolved. Append
+as you hit new ones; prune as they get fixed.
+
+- **2026-04-19 — diamond pickaxes exhausted at loot wall.** 31 chests scanned
+  around (568, 66, 913); only stone pickaxes + diamond shovels remained in the
+  tool chests. Need a source for new diamond picks: (a) mine diamonds + craft
+  via a crafting table, (b) trade with villagers in the adjacent greenhouse
+  (568 area has ~50 Armorers/Weaponsmiths), or (c) find a new loot chest in
+  a different building. Until then, runs are short (stone-pick durability =
+  131 blocks = ~1 hour of basalt mining across 5 picks).
+- **2026-04-19 — `auto-replenish` + stone-pick rotation CONFIRMED WORKING.**
+  Started with 5 stone picks; ~30 min later bot was at picks=2 and had 372
+  basalt + 30 blackstone in inventory — meaning 3 picks shattered and the bot
+  kept mining through each break without agent intervention. Per-pick yield
+  was ~130 blocks, matching the stone-pick durability of 131 almost exactly.
+  auto-replenish definitively moves spare picks from main inventory into the
+  hotbar when the active one breaks.
+- **2026-04-19 — mining rate with stone picks on basalt is ~13 items/min,
+  not ~2.** Earlier estimate (based on a 3-min window just after dim flip) was
+  wildly wrong; steady-state throughput on stone_pickaxe against basalt is
+  ~13 blocks/min once the bot finds a vein. At that rate, filling inventory
+  to 34 stacks is still unreachable within one run (stone picks last ~130
+  blocks each, ~10 min per pick → 5 picks ≈ 50 min of mining ≈ 650 blocks ≈
+  11 stacks). So `picks <= 1` remains the practical return trigger; the
+  `used >= 34` trigger is a dead branch on stone-pick runs.
+- **2026-04-19 — baritone.mine descended to y=16 following basalt veins.**
+  Started at y=99 (portal level), ended at y=16 after ~30 min. Basalt pillars
+  extend deep into the nether; baritone's mine algorithm follows them down
+  without any y-floor guard. This is mostly fine (HP stayed >15), but the
+  return-to-portal path now has to climb 83 blocks. Consider a y-floor check
+  in the MINE poll: if `pos.y < 40`, stop and pillar up before the pick count
+  hits the return threshold — keeps the trip-home shorter.
+- **Nether portal pre-scan stuck.** `baritone.get_to_block nether_portal` from
+  the overworld spawn area worked fine, but the `baritone.goto +8/+8` step
+  intended to clear the portal in the nether went immediately idle without
+  moving. Didn't block the run (baritone.mine itself handled pathing), but
+  worth tracing — may be a goal-validation bug in mod-c's nether spawn
+  handling.
+- **Dim-flip timing.** The mine-routine's post-transit code waits for
+  `dim == the_nether` and assumes baritone is ready immediately. In practice,
+  baritone needed a `stop + reconfigure + re-fire` cycle to engage after
+  transit. Consider adding a mandatory reset step to the skill's Step 1c,
+  not as a fallback.
+- **2026-04-19 — `baritone.goto` drops active=false mid-path periodically.**
+  Not only after dim transits — also during pure overworld travel. Bot walked
+  (478,71,834)→(520,66,871) then idle, retried goto → walked further, idle
+  again, retried → final segment. Each retry (same coord) re-engages path
+  planning. Workaround: don't exit the poll on the first `active=false`;
+  either wait 3 consecutive idle polls before giving up, OR re-fire the same
+  goto and continue polling. Probably a Baritone config around path-segment
+  length — worth tracing and raising `pathCutoffDistance` or similar.
+- **2026-04-19 — MINE poll loop can be replaced by Monitors.** The polling
+  loop in Step 1d duplicates what the `PICKAXE_CRITICAL` and `INV_FULL`
+  monitors now do. What remains is the SPOT_FILE maintenance (save last
+  productive position on USED growth, delete on death). That's ~10 lines
+  and could live inside a dedicated `spot-file` Monitor that polls every
+  30s. Simplifying the loop would cut the skill by ~50 lines.
