@@ -16,6 +16,14 @@ Description: 4×5×3 wall of chests stacked in a small enclosed room near spawn.
 Location: `(449, 75, 861)` ish
 Description: Small wooden interior with bookshelves, lanterns, and an oak door. Visible from spawn looking SE.
 
+### Nether portal pair
+- Overworld portal: **`(480, 70, 858)`** — what `baritone.get_to_block minecraft:nether_portal` walks to from the spawn area.
+- Nether-side portal: **`(61, 99, 110)`** — bot exits here. **WARNING:** the area to +X (toward `(74, 58, 114)`) is the recurring magma-cube fall-death zone. Always pre-walk `-X` 50+ blocks before firing `baritone.mine`. See the routine's last-safe-spot mechanism for details.
+
+### Warehouse 1 — backup gear/storage stash (TBD coords)
+Location: **TBD — to the LEFT of Warehouse 2 (likely `-X` direction).**
+Description: Per user, additional gear cache. **Action item:** next time the bot reaches Warehouse 2, take a panorama looking left (probably west / `-X`) and document Warehouse 1's exact coords + contents here. Use as secondary fallback for RESUPPLY when Warehouse 2 + the loot wall are both depleted.
+
 ### Warehouse 2 — bot's stash drop point
 Location: **`(478, 71, 834)`** (overworld)
 Description: Where the bot returns from the Nether portal. Near the spawn area on the same wooden platform as the chest fortress. Used as the consolidated drop-off for mined materials (basalt, blackstone, etc.). Bot prefers to deposit here before heading out for another mining run so a death only loses what's in-flight.

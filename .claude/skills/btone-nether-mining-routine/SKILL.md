@@ -39,9 +39,13 @@ rpc '{"method":"baritone.command","params":{"text":"set allowParkour false"}}'
 # bumping these means baritone routes AROUND mobs instead of mining straight at them.
 rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceCoefficient 4.0"}}'
 rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceRadius 16"}}'
-for m in auto-eat auto-armor auto-tool auto-weapon auto-replenish kill-aura safe-walk; do
+for m in auto-eat auto-armor auto-tool auto-weapon auto-replenish kill-aura \
+         no-fall auto-totem auto-respawn auto-mend anti-hunger; do
   rpc "{\"method\":\"meteor.module.enable\",\"params\":{\"name\":\"$m\"}}"
 done
+# safe-walk is a footgun: it freezes the bot on narrow nether platforms.
+# Don't enable it broadly — toggle on only when you specifically need
+# edge-sneak protection, and toggle off before pathing through tight spots.
 ```
 
 ### Why each Meteor module — and how to find new ones
@@ -54,7 +58,12 @@ done
 | `auto-weapon` | Same as auto-tool but for hostile mobs. Combined with kill-aura, the bot fights back with the best sword in hotbar. |
 | `auto-replenish` | When a hotbar stack empties or a hotbar tool breaks, pulls another of the same item id from main inventory into that slot. **Lets the bot keep mining even when its first pickaxe shatters** — as long as a spare is anywhere in main inventory. |
 | `kill-aura` | Auto-attacks hostile mobs in range. Pairs with auto-weapon. |
-| `safe-walk` | Sneaks the bot at block edges so mob knockback (esp. magma cubes in the nether) can't punt the bot off a ledge. **Critical for nether mining at y≥80** — without it, recurring fall-deaths at the same ledge each cycle. |
+| `safe-walk` | Sneaks at edges. **Footgun in the nether** — freezes the bot on narrow platforms. Leave OFF; prefer `no-fall` instead. |
+| `no-fall` | Negates fall damage entirely (sends a 0.0 velocity packet right before landing). The single biggest win for nether mining — magma-cube knockback off a y=96 ledge becomes a non-event. |
+| `auto-totem` | Auto-equips a Totem of Undying in the offhand slot. If the bot has even one totem, fatal damage triggers it for a free respawn-on-the-spot. Stack a few in inventory. |
+| `auto-respawn` | Automates the respawn click after death — saves the agent from having to call `player.respawn` manually. |
+| `auto-mend` | If the bot is holding/wearing Mending tools/armor, exp orbs auto-repair them. Compounds well with auto-tool. |
+| `anti-hunger` | Cuts hunger drain (avoids sprinting drain mostly). Combined with auto-eat, lets the bot stay topped up on much less food. |
 
 When the bot needs a new background behavior, scan `meteor.modules.list`
 for it before writing custom RPC logic:
@@ -136,7 +145,10 @@ while true; do
   fi
 
   [ "$USED" -ge 34 ] 2>/dev/null && { echo "INVENTORY FULL"; break; }
-  [ "$PICKS" = "0" ] && { echo "PICKAXE BROKE → store + resupply"; break; }
+  # Reserve at least 1 pick for the journey home — break the cycle when picks
+  # drops to 1, not 0. Mining empty-handed wastes durability on the LAST pick
+  # if anything still needs digging on the way back to portal.
+  [ "$PICKS" -le 1 ] 2>/dev/null && { echo "DOWN TO LAST PICK → store + resupply (reserve for journey)"; break; }
   if [ "$HP" = "0.0" ]; then
     # Death invalidates the saved spot — clearly not safe. The next cycle
     # will fall back to the fixed -50 X start.
@@ -162,10 +174,34 @@ Back to overworld, deposit at warehouse 2 (see `coords.md` for the project's
 specific coords).
 
 ```bash
-# 2a. Stop mining, walk to portal
+# 2a. Stop mining, walk to portal. KNOW THE PORTAL COORDS in BOTH dims
+# (see coords.md "Nether portal pair") — get_to_block silently no-ops if no
+# portal block is in baritone's scan range, which is easy to hit when the
+# bot has wandered 100+ blocks from spawn. Use baritone.goto with explicit
+# coords as a fallback so the bot can ALWAYS find its way home.
+NETHER_PORTAL_X=61; NETHER_PORTAL_Y=99; NETHER_PORTAL_Z=110   # ← from coords.md (nether side)
+OVERWORLD_PORTAL_X=480; OVERWORLD_PORTAL_Y=70; OVERWORLD_PORTAL_Z=858
+
 rpc '{"method":"baritone.stop"}'
-rpc '{"method":"baritone.get_to_block","params":{"blockId":"minecraft:nether_portal"}}'
-# wait for dim == minecraft:overworld
+DIM=$(rpc '{"method":"player.state"}' | jq -r '.result.dim')
+if [ "$DIM" = "minecraft:the_nether" ]; then
+  PORTAL_GOAL="$NETHER_PORTAL_X,$NETHER_PORTAL_Y,$NETHER_PORTAL_Z"
+else
+  PORTAL_GOAL="$OVERWORLD_PORTAL_X,$OVERWORLD_PORTAL_Y,$OVERWORLD_PORTAL_Z"
+fi
+PX=$(echo "$PORTAL_GOAL" | cut -d, -f1)
+PY=$(echo "$PORTAL_GOAL" | cut -d, -f2)
+PZ=$(echo "$PORTAL_GOAL" | cut -d, -f3)
+# Try the smart scan first (faster when in range), explicit-coord fallback
+# if the bot is too far for the scanner.
+rpc '{"method":"baritone.get_to_block","params":{"blockId":"minecraft:nether_portal"}}' >/dev/null
+sleep 6
+ACT=$(rpc '{"method":"baritone.status"}' | jq -r '.result.active')
+if [ "$ACT" = "false" ]; then
+  echo "get_to_block didn't engage; falling back to explicit goto ($PX, $PY, $PZ)"
+  rpc "{\"method\":\"baritone.goto\",\"params\":{\"x\":$PX,\"y\":$PY,\"z\":$PZ}}"
+fi
+# wait for dim flip
 
 # 2b. Walk to warehouse 2 (project-specific coords from coords.md)
 WH_X=478; WH_Y=71; WH_Z=834   # ← from coords.md
@@ -254,6 +290,41 @@ for piece in helmet chestplate leggings boots; do
   [ -n "$SLOT" ] && rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}"
   sleep 0.3
 done
+
+# Grab a weapon (sword preferred, axe fallback). kill-aura + auto-weapon
+# need at least one melee tool in the hotbar to actually fight back —
+# otherwise hostile mobs just walk up and chip the bot to death.
+HAS_WEAPON=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.slot < 9 and (.id | test("sword|axe")))] | length')
+if [ "$HAS_WEAPON" = "0" ]; then
+  STATE=$(rpc '{"method":"container.state"}')
+  SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.slot < 54 and (.id | test("diamond_sword|iron_sword|stone_sword|diamond_axe|iron_axe")))][0].slot // empty')
+  if [ -n "$SLOT" ]; then
+    echo "grab weapon from slot $SLOT"
+    rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
+    sleep 0.3
+  fi
+fi
+
+# Grab Totem of Undying if available — auto-totem keeps it in offhand and
+# saves the bot from fatal damage. One totem = one free death.
+HAS_TOTEM=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id == "minecraft:totem_of_undying")] | length')
+if [ "$HAS_TOTEM" = "0" ]; then
+  STATE=$(rpc '{"method":"container.state"}')
+  SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.slot < 54 and .id == "minecraft:totem_of_undying")][0].slot // empty')
+  [ -n "$SLOT" ] && rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
+  sleep 0.3
+fi
+
+# Grab 11+ oak_planks for the "Your Items Are Safe" mod. Each death costs
+# 11 planks but preserves the bot's inventory — way better than re-running
+# the full RESUPPLY loop after every magma cube hit.
+PLANKS=$(rpc '{"method":"player.inventory"}' | jq -r '[.result.main[] | select(.id | test("planks")) | .count] | add // 0')
+if [ "$PLANKS" -lt 22 ]; then  # ≥2 deaths worth
+  STATE=$(rpc '{"method":"container.state"}')
+  SLOT=$(echo "$STATE" | jq -r '[.result.slots[]? | select(.slot < 54 and (.id | test("planks")))][0].slot // empty')
+  [ -n "$SLOT" ] && rpc "{\"method\":\"container.click\",\"params\":{\"slot\":$SLOT,\"button\":0,\"mode\":\"QUICK_MOVE\"}}" >/dev/null
+  sleep 0.3
+fi
 
 # Grab ONE food stack — auto-eat only takes one item per hunger event, so 32-64
 # items is a long mining run's worth. Don't fill the inventory with food.
