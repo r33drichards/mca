@@ -35,6 +35,10 @@ are on. Re-run after every restart — Meteor settings persist but Baritone's
 ```bash
 rpc '{"method":"baritone.command","params":{"text":"set allowBreak true"}}'
 rpc '{"method":"baritone.command","params":{"text":"set allowParkour false"}}'
+# Pathfinder avoids hostile mobs more aggressively. Default coef is 1.5 / radius 8;
+# bumping these means baritone routes AROUND mobs instead of mining straight at them.
+rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceCoefficient 4.0"}}'
+rpc '{"method":"baritone.command","params":{"text":"set mobAvoidanceRadius 16"}}'
 for m in auto-eat auto-armor auto-tool auto-weapon auto-replenish kill-aura; do
   rpc "{\"method\":\"meteor.module.enable\",\"params\":{\"name\":\"$m\"}}"
 done
@@ -284,6 +288,60 @@ Suggested hotbar layout the bot keeps:
 
 Re-check after every resupply: any tool found at `slot >= 9` should be
 swapped into its hotbar reservation.
+
+## Combat interrupt — keep baritone from walking the bot to its death
+
+`kill-aura` swings at hostile mobs in range, but Baritone keeps pathing
+forward by default. Two layers of defense, in priority order:
+
+**1. Pathfinding avoidance (preventive, set in one-time setup):**
+`mobAvoidanceCoefficient=4.0` and `mobAvoidanceRadius=16` make Baritone
+penalize squares near hostile mobs heavily, so it routes around them when
+possible. This handles the common case (lone zombie on the path) without
+any extra logic.
+
+**2. HP-drop watcher (reactive, run alongside the MINE poll):**
+For situations where avoidance isn't enough — surrounded, ambushed in a
+narrow tunnel, blaze fire from above — a tiny watcher pauses Baritone
+when the bot takes damage and resumes the original goal once kill-aura
+clears the area:
+
+```bash
+# Run this in the background while baritone.mine is going.
+# Pauses mining if HP drops by ≥1 heart between samples; resumes after 5s.
+LAST_HP=20
+LAST_BLOCKS='["minecraft:blackstone","minecraft:basalt"]'  # whatever you fired
+while true; do
+  HP=$(rpc '{"method":"player.state"}' | jq -r '.result.health // 0')
+  ACTIVE=$(rpc '{"method":"baritone.status"}' | jq -r '.result.active')
+  # bash can't do floats — multiply by 100 and use integer compare
+  HP_X100=$(awk "BEGIN{print int($HP * 100)}")
+  LAST_X100=$(awk "BEGIN{print int($LAST_HP * 100)}")
+  DROP=$(( LAST_X100 - HP_X100 ))
+  if [ "$DROP" -gt 200 ] && [ "$ACTIVE" = "true" ]; then
+    echo "$(date +%H:%M:%S) HP $LAST_HP→$HP, pausing baritone for combat"
+    rpc '{"method":"baritone.stop"}' >/dev/null
+    sleep 5
+    echo "$(date +%H:%M:%S) resuming mine"
+    rpc "{\"method\":\"baritone.mine\",\"params\":{\"blocks\":$LAST_BLOCKS,\"quantity\":-1}}" >/dev/null
+  fi
+  LAST_HP=$HP
+  [ "$HP" = "0" ] && break
+  sleep 2
+done
+```
+
+The `&` it (background) right after firing `baritone.mine`, then run the
+inventory poll in the foreground. When inventory poll exits (full / dead),
+kill the watcher: `kill %1`.
+
+**Why not have kill-aura itself pause baritone?** Meteor's kill-aura runs
+every client tick and doesn't know about Baritone's process queue. There's
+no cross-module hook. The HP-drop watcher is the loose-coupled equivalent.
+
+Future improvement: a `world.entities_around` RPC + a built-in
+`pause-baritone-on-hostile-in-radius` mode in mod-c — would let us drop
+the bash-side watcher entirely.
 
 ## Step 4: goto 1
 
