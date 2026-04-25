@@ -33,10 +33,12 @@ apt-get install -y --no-install-recommends \
   openjdk-21-jre-headless openjdk-21-jdk-headless \
   python3 python3-pip python3-venv \
   jq curl ca-certificates git \
-  xserver-xorg-core xinit \
+  xserver-xorg-core xinit xauth \
   pulseaudio pulseaudio-utils alsa-utils \
   mesa-utils \
-  ffmpeg
+  ffmpeg \
+  bubblewrap socat ripgrep tmux \
+  xxd
 
 # --- 2. pin grub default to the older kernel --------------------------------
 sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"Advanced options for Ubuntu>Ubuntu, with Linux ${KERNEL_VERSION}\"|" /etc/default/grub
@@ -329,6 +331,38 @@ systemctl enable xorg-headless.service
 systemctl enable xauth-share.service
 systemctl enable btone-bot.service
 systemctl enable twitch-streamd.service
+
+# --- 12.6 claudeop user (sandboxed Claude Code runs as this) ---------------
+# Has /bin/bash so tmux can give it a real shell. Member of streamcontrol
+# so it can talk to /run/twitch-streamd.sock.
+if ! id claudeop >/dev/null 2>&1; then
+  useradd -m -s /bin/bash -d /home/claudeop claudeop
+fi
+usermod -aG streamcontrol claudeop
+install -d -o claudeop -g claudeop -m 0755 /home/claudeop
+
+# --- 12.7 node + sandbox-runtime + claude code ------------------------------
+# Ubuntu 24.04 ships Node 18, which @anthropic-ai/claude-code requires
+# (>=18). Use NodeSource for Node 20 to be safe.
+if ! command -v node >/dev/null 2>&1 || [ "$(node -v 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')" -lt 20 ]; then
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt-get install -y --no-install-recommends nodejs
+fi
+
+# srt = sandbox-runtime CLI; claude = Claude Code CLI. Both npm globals.
+# Re-runs are no-ops once present.
+if ! command -v srt >/dev/null 2>&1; then
+  npm install -g @anthropic-ai/sandbox-runtime
+fi
+if ! command -v claude >/dev/null 2>&1; then
+  npm install -g @anthropic-ai/claude-code
+fi
+
+# --- 12.8 srt sandbox profile ---------------------------------------------
+install -d -o root -g root -m 0755 /etc/claude
+install -m 0644 -o root -g root \
+  "/var/lib/btone/source/infra/srt-profile.json" \
+  /etc/claude/srt-profile.json
 
 # --- 13. signal done --------------------------------------------------------
 # We can't start xorg-headless yet — it needs the new kernel + nvidia DRM,
