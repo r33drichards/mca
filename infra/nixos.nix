@@ -68,7 +68,20 @@ in
   config = {
     ec2.hvm = true;
 
-    nix.settings.experimental-features = [ "nix-command" "flakes" ];
+    nix.settings = {
+      experimental-features = [ "nix-command" "flakes" ];
+      # cuda-maintainers prebuilds the proprietary nvidia driver against
+      # the standard nixpkgs kernels, so we don't have to compile a
+      # ~500MB kernel module on every fresh deploy.
+      extra-substituters = [
+        "https://cuda-maintainers.cachix.org"
+        "https://nix-community.cachix.org"
+      ];
+      extra-trusted-public-keys = [
+        "cuda-maintainers.cachix.org-1:0dq3bujKpuEPMCX6U4WylrUDZ9JyUG0VpVZa7CNfq5E="
+        "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+      ];
+    };
 
     # The proprietary Nvidia driver is non-free; allow it explicitly.
     nixpkgs.config.allowUnfree = true;
