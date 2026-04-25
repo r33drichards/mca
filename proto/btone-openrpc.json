@@ -1,0 +1,1680 @@
+{
+  "openrpc" : "1.2.6",
+  "info" : {
+    "title" : "btone",
+    "version" : "0.1.0",
+    "description" : "JSON-RPC over HTTP for the btone-mod-c Minecraft Fabric mod. POST {method, params} to /rpc with Authorization: Bearer <token>."
+  },
+  "servers" : [ {
+    "name" : "local-bridge",
+    "url" : "http://127.0.0.1:25591/rpc",
+    "summary" : "Local HTTP bridge. Port + bearer token written to ~/btone-mc-work/config/btone-bridge.json on mod start."
+  } ],
+  "methods" : [ {
+    "name" : "debug.echo",
+    "summary" : "Echo whatever params were sent. Useful for transport tests.",
+    "params" : [ {
+      "name" : "params",
+      "required" : false,
+      "schema" : {
+        "$ref" : "#/components/schemas/AnyObject"
+      }
+    } ],
+    "result" : {
+      "name" : "DebugEchoResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/AnyObject"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "debug.methods",
+    "summary" : "List all registered RPC method names.",
+    "params" : [ ],
+    "result" : {
+      "name" : "DebugMethodsResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "methods" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string"
+            }
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "rpc.discover",
+    "summary" : "OpenRPC self-introspection. Returns the full schema of this service.",
+    "params" : [ ],
+    "result" : {
+      "name" : "RpcDiscoverResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/AnyObject"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.state",
+    "summary" : "Read player position, rotation, health, food, dimension.",
+    "params" : [ ],
+    "result" : {
+      "name" : "PlayerStateResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/PlayerState"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.inventory",
+    "summary" : "Read full main inventory + hotbar selected slot.",
+    "params" : [ ],
+    "result" : {
+      "name" : "PlayerInventoryResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/Inventory"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.equipped",
+    "summary" : "Read items in main + off hand.",
+    "params" : [ ],
+    "result" : {
+      "name" : "PlayerEquippedResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/EquippedHands"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.respawn",
+    "summary" : "Click respawn after a death; closes the death screen.",
+    "params" : [ ],
+    "result" : {
+      "name" : "PlayerRespawnResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "respawned" : {
+            "type" : "boolean"
+          },
+          "reason" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.pillar_up",
+    "summary" : "Pillar straight up to a target Y by holding jump+use. Block id must be in hotbar.",
+    "params" : [ {
+      "name" : "block",
+      "required" : false,
+      "description" : "Block id (default minecraft:basalt).",
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "target_y",
+      "required" : true,
+      "description" : "Target Y level.",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "max_ticks",
+      "required" : false,
+      "description" : "Hard cap (default 200 ≈ 10s).",
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "PlayerPillarUpResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/OkAck"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.bridge",
+    "summary" : "Walk-and-place bridge in a horizontal direction (forward+sneak+use loop). DEPRECATED: see world.bridge.",
+    "params" : [ {
+      "name" : "block",
+      "required" : false,
+      "description" : "Block id in hotbar (default basalt).",
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "direction",
+      "required" : true,
+      "description" : "+x | -x | +z | -z",
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "distance",
+      "required" : true,
+      "description" : "Number of blocks to place.",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "max_ticks",
+      "required" : false,
+      "description" : "Hard cap (default 400).",
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "PlayerBridgeResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/OkAck"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.stairs_up",
+    "summary" : "Walk-and-place ascending stairs in a horizontal direction.",
+    "params" : [ {
+      "name" : "block",
+      "required" : false,
+      "description" : "Block id in hotbar.",
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "direction",
+      "required" : true,
+      "description" : "+x | -x | +z | -z",
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "distance",
+      "required" : true,
+      "description" : "Stair steps.",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "max_ticks",
+      "required" : false,
+      "description" : "Hard cap (default 400).",
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "PlayerStairsUpResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/OkAck"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.set_rotation",
+    "summary" : "Force player head + body yaw/pitch. Stomps last* fields so the renderer doesn't interpolate back.",
+    "params" : [ {
+      "name" : "yaw",
+      "required" : false,
+      "description" : "Degrees (north=180, south=0).",
+      "schema" : {
+        "type" : "number"
+      }
+    }, {
+      "name" : "pitch",
+      "required" : false,
+      "description" : "-90 (up) to 90 (down).",
+      "schema" : {
+        "type" : "number"
+      }
+    } ],
+    "result" : {
+      "name" : "PlayerSetRotationResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "ok" : {
+            "type" : "boolean"
+          },
+          "yaw" : {
+            "type" : "number"
+          },
+          "pitch" : {
+            "type" : "number"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.press_key",
+    "summary" : "Press or release a vanilla input key (jump/sneak/sprint/attack/use/forward/back/left/right).",
+    "params" : [ {
+      "name" : "key",
+      "required" : true,
+      "description" : "jump|sneak|sprint|attack|use|forward|back|left|right",
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "action",
+      "required" : false,
+      "description" : "press (default) or release",
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "PlayerPressKeyResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "key" : {
+            "type" : "string"
+          },
+          "pressed" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.teleport",
+    "summary" : "Force-set client-side position. Server may snap back on strict anti-cheat. Stuck-pocket escape only.",
+    "params" : [ {
+      "name" : "x",
+      "required" : true,
+      "schema" : {
+        "type" : "number"
+      }
+    }, {
+      "name" : "y",
+      "required" : true,
+      "schema" : {
+        "type" : "number"
+      }
+    }, {
+      "name" : "z",
+      "required" : true,
+      "schema" : {
+        "type" : "number"
+      }
+    } ],
+    "result" : {
+      "name" : "PlayerTeleportResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "teleported" : {
+            "type" : "boolean"
+          },
+          "x" : {
+            "type" : "number"
+          },
+          "y" : {
+            "type" : "number"
+          },
+          "z" : {
+            "type" : "number"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "player.set_velocity",
+    "summary" : "Set player velocity vector (ticks-per-block units). Useful for fall-recovery.",
+    "params" : [ {
+      "name" : "vx",
+      "required" : false,
+      "schema" : {
+        "type" : "number"
+      }
+    }, {
+      "name" : "vy",
+      "required" : false,
+      "schema" : {
+        "type" : "number"
+      }
+    }, {
+      "name" : "vz",
+      "required" : false,
+      "schema" : {
+        "type" : "number"
+      }
+    } ],
+    "result" : {
+      "name" : "PlayerSetVelocityResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "set" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.block_at",
+    "summary" : "Read block id at a single position.",
+    "params" : [ {
+      "name" : "x",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "y",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "z",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldBlockAtResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/Block"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.blocks_around",
+    "summary" : "List non-air blocks in a cube around the player. Radius clamped to [0,8].",
+    "params" : [ {
+      "name" : "radius",
+      "required" : false,
+      "description" : "0..8 (default 3)",
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldBlocksAroundResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/BlocksAround"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.raycast",
+    "summary" : "Cast a ray from the player's eye in look direction. Returns first hit.",
+    "params" : [ {
+      "name" : "max",
+      "required" : false,
+      "description" : "Max distance (default 5.0)",
+      "schema" : {
+        "type" : "number"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldRaycastResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/RaycastResult"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.mine_block",
+    "summary" : "Single attackBlock tick at a position. Use world.mine_down or baritone.command \"mine\" for continuous.",
+    "params" : [ {
+      "name" : "x",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "y",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "z",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldMineBlockResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "started" : {
+            "type" : "boolean"
+          },
+          "side" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.place_block",
+    "summary" : "interactBlock against a target. Auto-aims; replaces water/air directly. Used for placing AND for hoe/seed actions when block id is held.",
+    "params" : [ {
+      "name" : "x",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "y",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "z",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "hand",
+      "required" : false,
+      "description" : "main (default) | off",
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "side",
+      "required" : false,
+      "description" : "up|down|north|south|east|west — overrides auto-chooseSide",
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldPlaceBlockResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "result" : {
+            "type" : "string"
+          },
+          "side" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.use_item",
+    "summary" : "Right-click with held item (eat food, drink potion, throw ender pearl, etc.).",
+    "params" : [ {
+      "name" : "hand",
+      "required" : false,
+      "description" : "main (default) | off",
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldUseItemResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "result" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.interact_entity",
+    "summary" : "Right-click an entity by id (e.g. open a villager trade GUI).",
+    "params" : [ {
+      "name" : "entityId",
+      "required" : true,
+      "description" : "Numeric entity id from raycast/blocks_around.",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "hand",
+      "required" : false,
+      "description" : "main (default) | off",
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldInteractEntityResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "result" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.mine_down",
+    "summary" : "Continuously mine the block under the bot, fall, repeat. Drives updateBlockBreakingProgress from tick callback (the only way to break stone reliably).",
+    "params" : [ {
+      "name" : "count",
+      "required" : true,
+      "description" : "Number of blocks to break.",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "max_ticks",
+      "required" : false,
+      "description" : "Hard cap (default 6000 ≈ 5min).",
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldMineDownResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/OkAck"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.bridge",
+    "summary" : "Walk-and-place bridge using synthetic BlockHitResult on the floor's edge face. Survives camera-pitch raycast misses.",
+    "params" : [ {
+      "name" : "block",
+      "required" : false,
+      "description" : "Block id in hotbar (default basalt).",
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "direction",
+      "required" : true,
+      "description" : "+x | -x | +z | -z",
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "distance",
+      "required" : true,
+      "description" : "Number of blocks to place.",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "max_ticks",
+      "required" : false,
+      "description" : "Hard cap (default 1200 ≈ 1min).",
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldBridgeResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/OkAck"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.screenshot",
+    "summary" : "Take a single annotated screenshot from the player's POV. Returns base64 PNG/JPEG + entity/block annotations.",
+    "params" : [ {
+      "name" : "width",
+      "required" : false,
+      "description" : "Desired width; height computed from FB ratio.",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "yaw",
+      "required" : false,
+      "description" : "Override yaw for this shot.",
+      "schema" : {
+        "type" : "number"
+      }
+    }, {
+      "name" : "pitch",
+      "required" : false,
+      "description" : "Override pitch.",
+      "schema" : {
+        "type" : "number"
+      }
+    }, {
+      "name" : "includeHud",
+      "required" : false,
+      "description" : "Render HUD into the image (default false).",
+      "schema" : {
+        "type" : "boolean"
+      }
+    }, {
+      "name" : "annotateRange",
+      "required" : false,
+      "description" : "Block-annotation cube half-width (1..64, default 16).",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "format",
+      "required" : false,
+      "description" : "png (default) | jpeg",
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldScreenshotResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/ScreenshotFrame"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "world.screenshot_panorama",
+    "summary" : "Take N screenshots around the player in a horizontal sweep (yaw step = 360/N). Returns frames[].",
+    "params" : [ {
+      "name" : "angles",
+      "required" : false,
+      "description" : "1..16 (default 4).",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "width",
+      "required" : false,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "yaw",
+      "required" : false,
+      "description" : "Base yaw; offsets are added per frame.",
+      "schema" : {
+        "type" : "number"
+      }
+    }, {
+      "name" : "pitch",
+      "required" : false,
+      "schema" : {
+        "type" : "number"
+      }
+    }, {
+      "name" : "includeHud",
+      "required" : false,
+      "schema" : {
+        "type" : "boolean"
+      }
+    }, {
+      "name" : "annotateRange",
+      "required" : false,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "format",
+      "required" : false,
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "WorldScreenshotPanoramaResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/PanoramaResult"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "chat.send",
+    "summary" : "Send a chat line. Strings starting with / route through sendChatCommand. Fire-and-forget: chat-signing path can hang in offline mode.",
+    "params" : [ {
+      "name" : "text",
+      "required" : true,
+      "description" : "Message body or /command",
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "ChatSendResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "queued" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "chat.recent",
+    "summary" : "Read the last N chat lines from the bot's seen-messages buffer (cap 256).",
+    "params" : [ {
+      "name" : "n",
+      "required" : false,
+      "description" : "Default 50, max 256.",
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "ChatRecentResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/ChatMessages"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "container.open_inventory",
+    "summary" : "Open the player's own inventory screen (no nearby block needed). Required before SWAP-mode clicks against own inv.",
+    "params" : [ ],
+    "result" : {
+      "name" : "ContainerOpenInventoryResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "opened" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "container.open",
+    "summary" : "Right-click a block to open it (chest, barrel, crafting table). Caller polls container.state to confirm.",
+    "params" : [ {
+      "name" : "x",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "y",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "z",
+      "required" : true,
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "ContainerOpenResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "requested" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "container.state",
+    "summary" : "Read currently-open screen's slot contents.",
+    "params" : [ ],
+    "result" : {
+      "name" : "ContainerStateResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/ContainerState"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "container.click",
+    "summary" : "Click a slot in the open screen. SlotActionType: PICKUP, QUICK_MOVE, SWAP, CLONE, THROW, QUICK_CRAFT, PICKUP_ALL.",
+    "params" : [ {
+      "name" : "slot",
+      "required" : true,
+      "description" : "Screen slot index. -999 = drop cursor outside.",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "button",
+      "required" : false,
+      "description" : "0=left, 1=right, 0..8=hotbar (SWAP), 40=offhand (SWAP).",
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "mode",
+      "required" : false,
+      "description" : "PICKUP (default), QUICK_MOVE, SWAP, CLONE, THROW, QUICK_CRAFT, PICKUP_ALL",
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "ContainerClickResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "clicked" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "container.close",
+    "summary" : "Close the open screen.",
+    "params" : [ ],
+    "result" : {
+      "name" : "ContainerCloseResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "closed" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.goto",
+    "summary" : "Pathfind to a goal. Pass {x,y,z} for GoalBlock, {x,z} for GoalXZ, {y} for GoalYLevel.",
+    "params" : [ {
+      "name" : "x",
+      "required" : false,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "y",
+      "required" : false,
+      "schema" : {
+        "type" : "integer"
+      }
+    }, {
+      "name" : "z",
+      "required" : false,
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "BaritoneGotoResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "started" : {
+            "type" : "boolean"
+          },
+          "goal" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.stop",
+    "summary" : "Cancel current pathing.",
+    "params" : [ ],
+    "result" : {
+      "name" : "BaritoneStopResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "stopped" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.status",
+    "summary" : "Probe baritone availability and current goal.",
+    "params" : [ ],
+    "result" : {
+      "name" : "BaritoneStatusResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "hasBaritone" : {
+            "type" : "boolean"
+          },
+          "active" : {
+            "type" : "boolean"
+          },
+          "goal" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.mine",
+    "summary" : "Mine N of the given block ids. WARNING: deadlocks the client thread on this build — prefer baritone.command \"mine <id> [N]\".",
+    "params" : [ {
+      "name" : "blocks",
+      "required" : true,
+      "description" : "Array of block ids, e.g. [\"minecraft:stone\"].",
+      "schema" : {
+        "type" : "array"
+      }
+    }, {
+      "name" : "quantity",
+      "required" : false,
+      "description" : "-1 for unlimited (default).",
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "BaritoneMineResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "started" : {
+            "type" : "boolean"
+          },
+          "count" : {
+            "type" : "integer"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.follow",
+    "summary" : "Follow an entity by display name.",
+    "params" : [ {
+      "name" : "entityName",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "BaritoneFollowResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "started" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.command",
+    "summary" : "Execute a Baritone chat-command (e.g. \"mine minecraft:stone 5\", \"set allowBreak true\"). Runs on a dedicated worker — does NOT deadlock the client thread like baritone.mine does.",
+    "params" : [ {
+      "name" : "text",
+      "required" : true,
+      "description" : "Command body without the # prefix.",
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "BaritoneCommandResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "queued" : {
+            "type" : "boolean"
+          },
+          "command" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.get_to_block",
+    "summary" : "Pathfind to the nearest block of the given id (e.g. \"minecraft:chest\"). Bypasses the command parser.",
+    "params" : [ {
+      "name" : "blockId",
+      "required" : true,
+      "description" : "Full block id with namespace.",
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "BaritoneGetToBlockResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "queued" : {
+            "type" : "boolean"
+          },
+          "block" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.thisway",
+    "summary" : "Walk N blocks along current look direction. No goal-block scan; pure pathfinding test.",
+    "params" : [ {
+      "name" : "distance",
+      "required" : false,
+      "description" : "Default 50.",
+      "schema" : {
+        "type" : "integer"
+      }
+    } ],
+    "result" : {
+      "name" : "BaritoneThiswayResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "queued" : {
+            "type" : "boolean"
+          },
+          "distance" : {
+            "type" : "integer"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.setting",
+    "summary" : "Set a Baritone setting. Value is auto-parsed from JSON or string form.",
+    "params" : [ {
+      "name" : "key",
+      "required" : true,
+      "description" : "Setting name (lowercased lookup).",
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "value",
+      "required" : true,
+      "description" : "New value as JSON or text.",
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "BaritoneSettingResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "applied" : {
+            "type" : "boolean"
+          },
+          "value" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.setting_get",
+    "summary" : "Read a Baritone setting's current value.",
+    "params" : [ {
+      "name" : "key",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "BaritoneSettingGetResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "key" : {
+            "type" : "string"
+          },
+          "value" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "baritone.build",
+    "summary" : "Schematic build — NOT IMPLEMENTED in v0.1.",
+    "params" : [ ],
+    "result" : {
+      "name" : "BaritoneBuildResult",
+      "schema" : {
+        "$ref" : "#/components/schemas/AnyObject"
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "meteor.modules.list",
+    "summary" : "List all loaded Meteor module names.",
+    "params" : [ ],
+    "result" : {
+      "name" : "MeteorModulesListResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "modules" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string"
+            }
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "meteor.module.enable",
+    "summary" : "Activate a Meteor module by name (e.g. auto-armor, kill-aura).",
+    "params" : [ {
+      "name" : "name",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "MeteorModuleEnableResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "ok" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "meteor.module.disable",
+    "summary" : "Deactivate a Meteor module by name.",
+    "params" : [ {
+      "name" : "name",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "MeteorModuleDisableResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "ok" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "meteor.module.toggle",
+    "summary" : "Toggle a Meteor module's active state.",
+    "params" : [ {
+      "name" : "name",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "MeteorModuleToggleResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "ok" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "meteor.module.is_active",
+    "summary" : "Read whether a module is currently active.",
+    "params" : [ {
+      "name" : "name",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "MeteorModuleIsActiveResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "name" : {
+            "type" : "string"
+          },
+          "active" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "meteor.module.settings_list",
+    "summary" : "List the names of all settings on a module.",
+    "params" : [ {
+      "name" : "name",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "MeteorModuleSettingsListResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "name" : {
+            "type" : "string"
+          },
+          "settings" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string"
+            }
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "meteor.module.setting_get",
+    "summary" : "Read a module setting's current value (string form).",
+    "params" : [ {
+      "name" : "name",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "setting",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "MeteorModuleSettingGetResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "name" : {
+            "type" : "string"
+          },
+          "setting" : {
+            "type" : "string"
+          },
+          "value" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  }, {
+    "name" : "meteor.module.setting_set",
+    "summary" : "Set a module setting from a string. Bypasses Meteor's chat-command path which fails silently.",
+    "params" : [ {
+      "name" : "name",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "setting",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    }, {
+      "name" : "value",
+      "required" : true,
+      "schema" : {
+        "type" : "string"
+      }
+    } ],
+    "result" : {
+      "name" : "MeteorModuleSettingSetResult",
+      "schema" : {
+        "type" : "object",
+        "properties" : {
+          "ok" : {
+            "type" : "boolean"
+          }
+        }
+      }
+    },
+    "paramStructure" : "by-name"
+  } ],
+  "components" : {
+    "schemas" : {
+      "Vec3d" : {
+        "type" : "object",
+        "description" : "3D position (floats).",
+        "properties" : {
+          "x" : {
+            "type" : "number"
+          },
+          "y" : {
+            "type" : "number"
+          },
+          "z" : {
+            "type" : "number"
+          }
+        },
+        "required" : [ "x", "y", "z" ]
+      },
+      "Vec3i" : {
+        "type" : "object",
+        "description" : "Integer block coordinates.",
+        "properties" : {
+          "x" : {
+            "type" : "integer"
+          },
+          "y" : {
+            "type" : "integer"
+          },
+          "z" : {
+            "type" : "integer"
+          }
+        },
+        "required" : [ "x", "y", "z" ]
+      },
+      "Rotation" : {
+        "type" : "object",
+        "description" : "Player camera angles.",
+        "properties" : {
+          "yaw" : {
+            "type" : "number"
+          },
+          "pitch" : {
+            "type" : "number"
+          }
+        },
+        "required" : [ "yaw", "pitch" ]
+      },
+      "Block" : {
+        "type" : "object",
+        "description" : "Block at a position.",
+        "properties" : {
+          "id" : {
+            "type" : "string"
+          },
+          "air" : {
+            "type" : "boolean"
+          }
+        },
+        "required" : [ "id", "air" ]
+      },
+      "BlockWithPos" : {
+        "type" : "object",
+        "description" : "Block id with explicit position.",
+        "properties" : {
+          "x" : {
+            "type" : "integer"
+          },
+          "y" : {
+            "type" : "integer"
+          },
+          "z" : {
+            "type" : "integer"
+          },
+          "id" : {
+            "type" : "string"
+          }
+        },
+        "required" : [ "x", "y", "z", "id" ]
+      },
+      "ItemStack" : {
+        "type" : "object",
+        "description" : "Inventory item entry.",
+        "properties" : {
+          "slot" : {
+            "type" : "integer"
+          },
+          "id" : {
+            "type" : "string"
+          },
+          "count" : {
+            "type" : "integer"
+          },
+          "empty" : {
+            "type" : "boolean"
+          }
+        },
+        "required" : [ "id", "count" ]
+      },
+      "PlayerState" : {
+        "type" : "object",
+        "description" : "Player position, health, food, and dimension.",
+        "properties" : {
+          "inWorld" : {
+            "type" : "boolean"
+          },
+          "pos" : {
+            "$ref" : "#/components/schemas/Vec3d"
+          },
+          "blockPos" : {
+            "$ref" : "#/components/schemas/Vec3i"
+          },
+          "rot" : {
+            "$ref" : "#/components/schemas/Rotation"
+          },
+          "health" : {
+            "type" : "number"
+          },
+          "food" : {
+            "type" : "integer"
+          },
+          "dim" : {
+            "type" : "string"
+          },
+          "name" : {
+            "type" : "string"
+          }
+        }
+      },
+      "Inventory" : {
+        "type" : "object",
+        "properties" : {
+          "inWorld" : {
+            "type" : "boolean"
+          },
+          "hotbarSlot" : {
+            "type" : "integer"
+          },
+          "main" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/ItemStack"
+            }
+          }
+        }
+      },
+      "EquippedHands" : {
+        "type" : "object",
+        "properties" : {
+          "inWorld" : {
+            "type" : "boolean"
+          },
+          "mainHand" : {
+            "$ref" : "#/components/schemas/ItemStack"
+          },
+          "offHand" : {
+            "$ref" : "#/components/schemas/ItemStack"
+          }
+        }
+      },
+      "RaycastResult" : {
+        "type" : "object",
+        "description" : "First entity or block intersected by a ray from the player's eye.",
+        "properties" : {
+          "type" : {
+            "type" : "string",
+            "description" : "MISS|BLOCK|ENTITY"
+          },
+          "x" : {
+            "type" : "integer"
+          },
+          "y" : {
+            "type" : "integer"
+          },
+          "z" : {
+            "type" : "integer"
+          },
+          "side" : {
+            "type" : "string"
+          },
+          "id" : {
+            "type" : "string"
+          },
+          "entityId" : {
+            "type" : "integer"
+          },
+          "entityType" : {
+            "type" : "string"
+          },
+          "entityName" : {
+            "type" : "string"
+          }
+        }
+      },
+      "ScreenshotFrame" : {
+        "type" : "object",
+        "properties" : {
+          "image" : {
+            "type" : "string",
+            "description" : "base64-encoded PNG/JPEG"
+          },
+          "format" : {
+            "type" : "string"
+          },
+          "width" : {
+            "type" : "integer"
+          },
+          "height" : {
+            "type" : "integer"
+          },
+          "yaw" : {
+            "type" : "number"
+          },
+          "pitch" : {
+            "type" : "number"
+          },
+          "camera" : {
+            "$ref" : "#/components/schemas/Vec3d"
+          },
+          "annotations" : {
+            "type" : "object"
+          }
+        }
+      },
+      "PanoramaResult" : {
+        "type" : "object",
+        "properties" : {
+          "frames" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/ScreenshotFrame"
+            }
+          }
+        }
+      },
+      "ChatMessages" : {
+        "type" : "object",
+        "properties" : {
+          "messages" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string"
+            }
+          }
+        }
+      },
+      "ContainerState" : {
+        "type" : "object",
+        "properties" : {
+          "open" : {
+            "type" : "boolean"
+          },
+          "screen" : {
+            "type" : "string"
+          },
+          "syncId" : {
+            "type" : "integer"
+          },
+          "slots" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/ItemStack"
+            }
+          }
+        }
+      },
+      "BlocksAround" : {
+        "type" : "object",
+        "properties" : {
+          "blocks" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/BlockWithPos"
+            }
+          }
+        }
+      },
+      "OkAck" : {
+        "type" : "object",
+        "description" : "Generic boolean acknowledgement.",
+        "properties" : {
+          "ok" : {
+            "type" : "boolean"
+          },
+          "reason" : {
+            "type" : "string"
+          }
+        },
+        "required" : [ "ok" ]
+      },
+      "AnyObject" : {
+        "type" : "object",
+        "additionalProperties" : true
+      }
+    }
+  }
+}

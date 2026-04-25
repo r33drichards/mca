@@ -21,9 +21,23 @@
 
 ## How the agent drives the bot
 
-The bot's bridge is HTTP at `127.0.0.1:<port>` with a Bearer token, both
-in `~/btone-mc-work/config/btone-bridge.json`. Standard preamble for any
-agent loop:
+**Default to `bin/btone-cli`** — this repo ships a generated CLI at
+`bin/btone-cli` (and matching Python/Go/TS clients in `clients/`) that
+handle the bridge config + auth header for you. Use it for ad-hoc RPC
+calls instead of writing raw `curl`. See the `btone-rpc-client` skill
+for full usage.
+
+```bash
+bin/btone-cli player.state | jq -c '{pos:.blockPos, hp:.health}'
+bin/btone-cli baritone.command --params '{"text":"mine minecraft:stone"}'
+bin/btone-cli list                  # all methods, one-line each
+bin/btone-cli describe player.pillar_up   # full param schema
+```
+
+Only fall back to raw `curl` when scripting something the CLI can't
+express (e.g. tight loops where startup cost matters). The bridge is
+HTTP at `127.0.0.1:<port>` with a Bearer token, both in
+`~/btone-mc-work/config/btone-bridge.json` — preamble for that case:
 
 ```bash
 CFG="$HOME/btone-mc-work/config/btone-bridge.json"
@@ -33,6 +47,36 @@ BASE="http://127.0.0.1:$PORT"
 H=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
 rpc() { curl -s -X POST "$BASE/rpc" "${H[@]}" -d "$1"; }
 ```
+
+## Critical RPC gotcha: `baritone.mine` deadlocks — use `baritone.command`
+
+Do NOT use the `baritone.mine` RPC. It consistently deadlocks the
+Minecraft client thread (verified 2026-04-23, multiple fresh MC
+launches, both with kill-aura on and off). Once it hits, every
+subsequent RPC returns `{"ok":false,"error":{"code":"TimeoutException","message":"null"}}`
+and MC has to be killed and restarted.
+
+Use `baritone.command` with the chat-equivalent command text instead:
+
+```bash
+# WRONG — deadlocks the client thread
+rpc '{"method":"baritone.mine","params":{"blocks":["minecraft:stone"],"quantity":-1}}'
+
+# RIGHT — runs on a dedicated worker thread
+rpc '{"method":"baritone.command","params":{"text":"mine minecraft:stone"}}'
+
+# Multiple block ids work as space-separated args
+rpc '{"method":"baritone.command","params":{"text":"mine minecraft:stone minecraft:coal_ore minecraft:copper_ore"}}'
+
+# Stop mining
+rpc '{"method":"baritone.command","params":{"text":"stop"}}'
+```
+
+Root cause: `baritone.mine` runs on the client thread via
+`ClientThread.call(1_000, ...)`, and something inside
+`primary().getMineProcess().mine(q, blocks)` blocks indefinitely on
+this setup. `baritone.command` sidesteps that by queueing the work on
+`COMMAND_EXEC` (see `BaritoneHandlers.java:127`).
 
 ## Behavioral rules
 

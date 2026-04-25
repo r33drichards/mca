@@ -35,7 +35,8 @@ apt-get install -y --no-install-recommends \
   jq curl ca-certificates git \
   xserver-xorg-core xinit \
   pulseaudio pulseaudio-utils alsa-utils \
-  mesa-utils
+  mesa-utils \
+  ffmpeg
 
 # --- 2. pin grub default to the older kernel --------------------------------
 sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"Advanced options for Ubuntu>Ubuntu, with Linux ${KERNEL_VERSION}\"|" /etc/default/grub
@@ -227,6 +228,45 @@ cat >/etc/btone-bot.env <<'EOF'
 BOT_USERNAME=BotEC2
 BOT_SERVER_HOST=centerbeam.proxy.rlwy.net
 BOT_SERVER_PORT=40387
+EOF
+
+# --- 12.5 streaming infra (Twitch via ffmpeg + h264_nvenc) -----------------
+# Captures the headless Xorg display (:99) at native 1280x720 and streams
+# to Twitch RTMP. Service is INSTALLED but NOT enabled — the operator
+# drops their stream key into /etc/btone-stream/env (mode 0600) and runs
+# `systemctl enable --now btone-stream`. Resolution matches the Xorg
+# ModeLine; bumping that to 1080p means re-rendering MC at 1080p too.
+install -d -m 0755 /etc/btone-stream
+install -m 0600 /dev/null /etc/btone-stream/env
+echo 'STREAM_KEY=' >/etc/btone-stream/env
+chmod 0600 /etc/btone-stream/env
+
+cat >/etc/systemd/system/btone-stream.service <<'EOF'
+[Unit]
+Description=Twitch RTMP streamer (x11grab :99 + h264_nvenc)
+After=xorg-headless.service network-online.target btone-bot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/btone-stream/env
+Environment=DISPLAY=:99
+ExecStartPre=/bin/sh -c 'test -n "$STREAM_KEY" || { echo "STREAM_KEY empty in /etc/btone-stream/env" >&2; exit 1; }'
+ExecStart=/usr/bin/ffmpeg -nostdin -loglevel warning -hide_banner \
+  -f x11grab -framerate 30 -video_size 1280x720 -i :99 \
+  -f lavfi -i anullsrc=r=44100:cl=stereo \
+  -c:v h264_nvenc -preset p4 -tune ll -b:v 3500k -maxrate 3500k -bufsize 7000k \
+  -g 60 -keyint_min 60 \
+  -c:a aac -b:a 160k -ar 44100 \
+  -f flv rtmp://live.twitch.tv/app/${STREAM_KEY}
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
 # Disable any previous xvfb unit (if upgrading from CPU deploy).

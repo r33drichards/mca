@@ -128,6 +128,14 @@ public final class BaritoneHandlers {
             // Direct entry into Baritone's command manager. Run on a dedicated
             // worker thread (NOT the client thread) so the parser/scanner can't
             // jam the client tick. Fire-and-forget.
+            //
+            // Caveat: commands that internally construct a BlockStateInterface
+            // (notably `mine ...`) throw "must be constructed on the main thread"
+            // here. Routing them through ClientThread.run instead made things
+            // WORSE — baritone's mine setup ends up locking the client thread
+            // for many seconds, freezing the whole game. So `mine` from this
+            // RPC path is currently unusable; agents should use a manual
+            // world.mine_block loop instead.
             String text = params.get("text").asText();
             COMMAND_EXEC.submit(() -> {
                 try {

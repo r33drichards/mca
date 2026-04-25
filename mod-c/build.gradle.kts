@@ -50,3 +50,32 @@ dependencies {
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 
 tasks.test { useJUnitPlatform() }
+
+// ---------------------------------------------------------------------------
+// OpenRPC spec generation. Schema.java is the single source of truth for
+// every JSON-RPC method the mod exposes. At build time we run its main(),
+// write the spec to ../proto/btone-openrpc.json (for client codegen at the
+// repo level), AND include it as a resource so rpc.discover can return it.
+// ---------------------------------------------------------------------------
+val generateOpenRpc by tasks.registering(JavaExec::class) {
+    description = "Emit ../proto/btone-openrpc.json from Schema.java."
+    group = "build"
+    // compileClasspath (Jackson + everything compileJava needed) plus the
+    // freshly compiled .class output. Using runtimeClasspath would pull in
+    // processResources and create a cycle (classes → processResources →
+    // generateOpenRpc → classes).
+    classpath = sourceSets["main"].compileClasspath +
+            files(tasks.named("compileJava").get().outputs.files)
+    mainClass.set("com.btone.c.schema.Schema")
+    val out = file("../proto/btone-openrpc.json")
+    args(out.absolutePath)
+    inputs.files(sourceSets["main"].java.srcDirs.flatMap {
+        fileTree(it).matching { include("**/schema/**") }
+    })
+    outputs.file(out)
+    dependsOn("compileJava")
+}
+
+// Bundle the spec into the mod jar so rpc.discover can return it at runtime.
+sourceSets["main"].resources.srcDir(file("../proto"))
+tasks.named("processResources") { dependsOn(generateOpenRpc) }

@@ -185,6 +185,10 @@ public class RunAwayFromDanger extends Module {
             warning("Baritone flee failed: %s", t.getClass().getSimpleName());
             return;
         }
+        // Prefix-tagged line first so the external loop's chat.recent grep
+        // can detect activation regardless of formatting changes below.
+        String reason = threatPos != null ? "mob-in-range" : "hp-drop";
+        info("[run-away] triggered: %s", reason);
         info("Fleeing %d blocks to (%d, %d, %d) — threat=%s hp=%.1f",
             runDistance.get(), gx, gy, gz,
             threatPos != null ? "mob" : "hp-drop", currentHp);

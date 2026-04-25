@@ -1,0 +1,13 @@
+{
+  "name": "btone-client",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/btone_client.ts",
+  "scripts": {
+    "test": "tsx src/smoketest.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}

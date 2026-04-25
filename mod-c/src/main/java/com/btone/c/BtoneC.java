@@ -13,6 +13,7 @@ import com.btone.c.handlers.WorldReadHandlers;
 import com.btone.c.handlers.WorldWriteHandlers;
 import com.btone.c.http.BtoneHttpServer;
 import com.btone.c.rpc.RpcRouter;
+import com.btone.c.schema.Schema;
 import com.btone.c.util.ConnectionConfig;
 import com.btone.c.util.Token;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -48,6 +49,15 @@ public final class BtoneC implements ClientModInitializer {
                 var arr = n.putArray("methods");
                 router.all().keySet().forEach(arr::add);
                 return n;
+            });
+
+            // OpenRPC self-introspection. Returns the full schema (param/result
+            // types for every method) so clients can self-discover. Prefers the
+            // bundled spec resource (committed via gradle generateOpenRpc), and
+            // falls back to building from Schema.java in-memory.
+            router.register("rpc.discover", params -> {
+                ObjectNode bundled = Schema.loadBundledSpec();
+                return bundled != null ? bundled : Schema.buildOpenRpc();
             });
 
             PlayerHandlers.registerAll(router);
@@ -145,6 +155,15 @@ public final class BtoneC implements ClientModInitializer {
                             addMethod.invoke(modulesInstance,
                                     new com.btone.c.meteor.PanicBoxUp());
                             LOG.info("registered meteor module: panic-box-up");
+                            addMethod.invoke(modulesInstance,
+                                    new com.btone.c.meteor.EnsurePickInHotbar());
+                            LOG.info("registered meteor module: ensure-pick-in-hotbar");
+                            addMethod.invoke(modulesInstance,
+                                    new com.btone.c.meteor.EnsureFoodInHotbar());
+                            LOG.info("registered meteor module: ensure-food-in-hotbar");
+                            addMethod.invoke(modulesInstance,
+                                    new com.btone.c.meteor.Surface());
+                            LOG.info("registered meteor module: surface");
                         }
                     } catch (Throwable modErr) {
                         LOG.warn("failed to register custom meteor module(s): {}", modErr.toString());

@@ -7,6 +7,8 @@ run/
 node_modules/
 .btone/
 .direnv/
+__pycache__/
+*.pyc
 .env
 .env.*
 *.log

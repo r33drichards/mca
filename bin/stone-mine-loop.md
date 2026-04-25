@@ -44,13 +44,14 @@ bin/btone-cli meteor.module.enable --params '{"name":"run-away-from-danger"}'
 # module keeps it stocked.
 bin/btone-cli meteor.module.setting_set --params '{"name":"auto-replenish","setting":"search-hotbar","value":"true"}'
 
-# TODO: meteor has NO built-in "surface when low on air" module on this
-# build (air-jump and air-place are unrelated). When user requested it
-# 2026-04-24, the workaround was to add a SURFACE_FROM_DRAIN phase to
-# the decision table that detects pos.y in oceanic water (< 62) and
-# fires baritone.goto pos.x, 65, pos.z to swim up. A real fix is to
-# extend mod-c with a tick-task that reads `player.getAir()` and drives
-# upward movement when air < 150 (= half bubble).
+# surface: when underwater air drops below threshold, holds jump to rise
+# (and cancels baritone path while rising). Source lives in
+# mod-c/src/main/java/com/btone/c/meteor/Surface.java — needs a JAR
+# rebuild + redeploy + MC restart to actually take effect. Until then
+# this call returns `no_module:surface` and the SURFACE_FROM_DRAIN phase
+# in the decision table is the fallback (detects y<62 and fires
+# baritone.goto y=65). The enable call is idempotent + safe to leave in.
+bin/btone-cli meteor.module.enable --params '{"name":"surface"}'
 ```
 
 ## Iteration logic

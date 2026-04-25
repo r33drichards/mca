@@ -124,6 +124,19 @@ Examples of useful searches: `tool`, `hotbar`, `replenish`, `inv`, `armor`,
 the same behavior with `container.click` / `player.inventory` polling — the
 module runs every tick on the client, the script polls every few seconds.
 
+## IMPORTANT: use `baritone.command`, not `baritone.mine`
+
+The `baritone.mine` RPC deadlocks the Minecraft client thread on this
+server (confirmed 2026-04-23). Once it fires, subsequent RPC calls
+— including `player.state`, `baritone.stop`, anything — return
+`TimeoutException:null` and MC has to be killed and restarted.
+
+Use `baritone.command` with a `text` of `"mine <block_id> [<block_id>...]"`
+instead. `baritone.command` runs on a dedicated worker thread
+(`COMMAND_EXEC`) via `getCommandManager().execute(text)` and skips the
+deadlock path entirely. Every code block in this skill that fires
+mining does so through `baritone.command` for that reason.
+
 ## Step 1: MINE
 
 Walk to the nearest portal, transit, mine until one of the two return
@@ -184,7 +197,7 @@ sleep 12
 rpc '{"method":"baritone.stop"}'
 
 # 1c. Fire unbounded mine
-rpc '{"method":"baritone.mine","params":{"blocks":["minecraft:blackstone","minecraft:basalt"],"quantity":-1}}'
+rpc '{"method":"baritone.command","params":{"text":"mine minecraft:blackstone minecraft:basalt"}}'
 
 # 1d. Poll until inventory full / HP=0 / pickaxe broke. Print only on changes.
 # Note jq syntax: separate calls per field — jq parses `(.x - 478)` as a
@@ -250,7 +263,7 @@ while true; do
       [ "$A" = "false" ] && break
       sleep 4
     done
-    rpc '{"method":"baritone.mine","params":{"blocks":["minecraft:blackstone","minecraft:basalt"],"quantity":-1}}' >/dev/null
+    rpc '{"method":"baritone.command","params":{"text":"mine minecraft:blackstone minecraft:basalt"}}' >/dev/null
     STUCK=0
     [ $KICKS -ge 3 ] && { echo "TOO MANY KICKS — local area exhausted, bailing to STORE"; break; }
   fi
@@ -290,7 +303,7 @@ rpc '{"method":"baritone.command","params":{"text":"goto -100 95 50"}}'
 # wait for arrival, then:
 P=$(rpc '{"method":"player.state"}' | jq -c '.result.blockPos')
 echo "$P" > "$SPOT_FILE"
-rpc '{"method":"baritone.mine","params":{"blocks":["minecraft:blackstone","minecraft:basalt"],"quantity":-1}}'
+rpc '{"method":"baritone.command","params":{"text":"mine minecraft:blackstone minecraft:basalt"}}'
 ```
 
 Saving the new spot to the file is the load-bearing step: the next cycle

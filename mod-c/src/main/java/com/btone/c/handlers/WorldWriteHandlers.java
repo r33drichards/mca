@@ -24,6 +24,69 @@ public final class WorldWriteHandlers {
         r.register("world.place_block", placeBlock());
         r.register("world.use_item", useItem());
         r.register("world.interact_entity", interactEntity());
+        r.register("world.mine_down", mineDown());
+        r.register("world.bridge", bridge());
+    }
+
+    /**
+     * Build a flat horizontal bridge in the given direction. Unlike
+     * {@code player.bridge} (which holds forward+use+sneak and relies on
+     * the client's raycast to pick a place target), this synthesizes a
+     * {@link net.minecraft.util.hit.BlockHitResult} on the chosen face of
+     * the current floor block. Placement always targets the correct face
+     * regardless of camera pitch, so it works from the edge of a platform
+     * where the raycast-based approach silently misses.
+     *
+     * See {@link BridgeTask} for the tick-loop implementation and the
+     * termination conditions.
+     *
+     * params: { block?: string (default "minecraft:basalt"),
+     *           direction: "+x"|"-x"|"+z"|"-z",
+     *           distance: int,
+     *           max_ticks?: int (default 1200 = 1 min) }
+     */
+    private static RpcHandler bridge() {
+        return params -> {
+            String block = params.has("block") ? params.get("block").asText() : "minecraft:basalt";
+            String direction = params.get("direction").asText();
+            int distance = params.get("distance").asInt();
+            int maxTicks = params.has("max_ticks") ? params.get("max_ticks").asInt() : 1200;
+            try {
+                return BridgeTask.submit(block, direction, distance, maxTicks)
+                        .get(120_000, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException te) {
+                ObjectNode n = M.createObjectNode();
+                n.put("ok", false);
+                n.put("reason", "rpc_timeout_120s");
+                return n;
+            }
+        };
+    }
+
+    /**
+     * Break {@code count} blocks straight down from the bot's current feet
+     * position. Drives {@link net.minecraft.client.network.ClientPlayerInteractionManager#updateBlockBreakingProgress}
+     * from the client-tick callback — the only reliable way to run continuous
+     * mining from an external agent (see {@link MineDownTask} for why
+     * attackBlock/press_key paths don't work).
+     *
+     * params: { count: int, max_ticks?: int (default 6000 = ~5 min) }
+     * blocks the HTTP thread for up to 5 min waiting for the task to finish.
+     */
+    private static RpcHandler mineDown() {
+        return params -> {
+            int count = params.get("count").asInt();
+            int maxTicks = params.has("max_ticks") ? params.get("max_ticks").asInt() : 6000;
+            try {
+                return MineDownTask.submit(count, maxTicks)
+                        .get(300_000, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException te) {
+                ObjectNode n = M.createObjectNode();
+                n.put("ok", false);
+                n.put("reason", "rpc_timeout_300s");
+                return n;
+            }
+        };
     }
 
     private static String describeAction(ActionResult ar) {
