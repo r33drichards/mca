@@ -189,19 +189,29 @@ in
       EndSection
     '';
 
+    # Make sure the nvidia kernel modules load on every boot. NixOS's
+    # hardware.nvidia handles this for the standard graphical session;
+    # since we run our own Xorg we make it explicit.
+    boot.kernelModules = [ "nvidia" "nvidia_modeset" "nvidia_uvm" "nvidia_drm" ];
+
     # Headless Xorg backed by the Nvidia GPU. Must run as root (the
     # nvidia X module needs CAP_SYS_ADMIN to talk to the GPU).
     systemd.services.xorg-headless = {
       description = "Headless Xorg server (Nvidia GPU) for the btone bot";
       wantedBy = [ "multi-user.target" ];
-      after = [ "systemd-udev-settle.service" "network-online.target" ];
+      after = [ "systemd-modules-load.service" "systemd-udev-settle.service" "network-online.target" ];
       serviceConfig = {
         Type = "simple";
         User = "root";
+        # /run/opengl-driver/lib/xorg/modules is where NixOS aggregates
+        # the nvidia X driver (nvidia_drv.so + libglx etc.). Without it,
+        # Xorg's default ModulePath sees only xorg-server's own modules
+        # and fails with "couldn't open module nvidia".
         ExecStart = lib.concatStringsSep " " [
           "${pkgs.xorg.xorgserver}/bin/Xorg"
           cfg.display
           "-config /etc/X11/xorg-headless.conf"
+          "-modulepath /run/opengl-driver/lib/xorg/modules,${pkgs.xorg.xorgserver}/lib/xorg/modules"
           "-nolisten tcp"
           "-noreset"
           "-logfile /var/log/xorg-headless.log"
