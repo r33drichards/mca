@@ -230,38 +230,84 @@ BOT_SERVER_HOST=centerbeam.proxy.rlwy.net
 BOT_SERVER_PORT=40387
 EOF
 
-# --- 12.5 streaming infra (Twitch via ffmpeg + h264_nvenc) -----------------
-# Captures the headless Xorg display (:99) at native 1280x720 and streams
-# to Twitch RTMP. Service is INSTALLED but NOT enabled — the operator
-# drops their stream key into /etc/btone-stream/env (mode 0600) and runs
-# `systemctl enable --now btone-stream`. Resolution matches the Xorg
-# ModeLine; bumping that to 1080p means re-rendering MC at 1080p too.
-install -d -m 0755 /etc/btone-stream
-install -m 0600 /dev/null /etc/btone-stream/env
-echo 'STREAM_KEY=' >/etc/btone-stream/env
+# --- 12.5 streaming infra (Twitch via ffmpeg, key-isolated under streamd) --
+# Three users own three concerns:
+#   btone     — runs MC + the RPC bridge (existing)
+#   streamd   — owns /etc/btone-stream/env (the Twitch key) + the ffmpeg
+#               subprocess. No login shell. Members of `streamcontrol`
+#               group can ask it to start/stop streams via the unix socket
+#               at /run/twitch-streamd.sock — but cannot read the key.
+#   claudeop  — added in §12.6; member of streamcontrol so the sandboxed
+#               Claude can call bin/twitch-stream START.
+if ! id streamd >/dev/null 2>&1; then
+  useradd -r -s /usr/sbin/nologin -d /var/lib/twitch-streamd streamd
+fi
+if ! getent group streamcontrol >/dev/null 2>&1; then
+  groupadd streamcontrol
+fi
+install -d -o streamd -g streamd -m 0750 /var/lib/twitch-streamd
+install -d -o root -g streamd -m 0750 /etc/btone-stream
+if [ ! -f /etc/btone-stream/env ]; then
+  install -m 0600 -o streamd -g streamd /dev/null /etc/btone-stream/env
+  echo 'STREAM_KEY=' >/etc/btone-stream/env
+fi
+chown streamd:streamd /etc/btone-stream/env
 chmod 0600 /etc/btone-stream/env
 
-cat >/etc/systemd/system/btone-stream.service <<'EOF'
+# X11 cookie share — Xorg started by root only allows root to connect.
+# We drop a group-readable xauth cookie at a path streamd can read so
+# ffmpeg (under streamd) can open DISPLAY=:99. xauth-share runs once
+# after xorg-headless starts and stamps a fresh random cookie.
+cat >/etc/systemd/system/xauth-share.service <<'EOF'
 [Unit]
-Description=Twitch RTMP streamer (x11grab :99 + h264_nvenc)
-After=xorg-headless.service network-online.target btone-bot.service
-Wants=network-online.target
+Description=Stamp a shared xauth cookie for streamd to read DISPLAY=:99
+After=xorg-headless.service
+Requires=xorg-headless.service
+PartOf=xorg-headless.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Wait briefly for Xorg to bind :99 before stamping the cookie.
+ExecStartPre=/bin/sh -c 'for i in 1 2 3 4 5; do [ -e /tmp/.X11-unix/X99 ] && exit 0; sleep 1; done; exit 1'
+ExecStart=/usr/bin/install -m 0640 -o root -g streamd /dev/null /var/lib/twitch-streamd/.Xauthority
+ExecStart=/bin/sh -c 'XAUTHORITY=/var/lib/twitch-streamd/.Xauthority /usr/bin/xauth add :99 . $(/usr/bin/xxd -l 16 -p /dev/urandom)'
+ExecStart=/bin/sh -c 'DISPLAY=:99 /usr/bin/xhost +SI:localuser:streamd >/dev/null'
+
+[Install]
+WantedBy=xorg-headless.service
+EOF
+
+# Daemon owns ffmpeg lifecycle + the unix socket. No env override —
+# STREAM_KEY comes only via EnvironmentFile, which only `streamd` and
+# root can read.
+install -m 0755 -o root -g root \
+  "/var/lib/btone/source/infra/twitch-streamd.py" \
+  /usr/local/bin/twitch-streamd
+
+cat >/etc/systemd/system/twitch-streamd.service <<'EOF'
+[Unit]
+Description=Twitch streaming control daemon (key holder, socket interface)
+After=xorg-headless.service xauth-share.service network-online.target btone-bot.service
+Wants=network-online.target xauth-share.service
 
 [Service]
 Type=simple
-User=root
+User=streamd
+Group=streamd
+SupplementaryGroups=video streamcontrol
 EnvironmentFile=/etc/btone-stream/env
 Environment=DISPLAY=:99
-ExecStartPre=/bin/sh -c 'test -n "$STREAM_KEY" || { echo "STREAM_KEY empty in /etc/btone-stream/env" >&2; exit 1; }'
-ExecStart=/usr/bin/ffmpeg -nostdin -loglevel warning -hide_banner \
-  -f x11grab -framerate 30 -video_size 1280x720 -i :99 \
-  -f lavfi -i anullsrc=r=44100:cl=stereo \
-  -c:v h264_nvenc -preset p4 -tune ll -b:v 3500k -maxrate 3500k -bufsize 7000k \
-  -g 60 -keyint_min 60 \
-  -c:a aac -b:a 160k -ar 44100 \
-  -f flv rtmp://live.twitch.tv/app/${STREAM_KEY}
+Environment=XAUTHORITY=/var/lib/twitch-streamd/.Xauthority
+ExecStart=/usr/local/bin/twitch-streamd
+ProtectSystem=strict
+ReadWritePaths=/run /var/lib/twitch-streamd
+ProtectHome=true
+PrivateTmp=false
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 Restart=on-failure
-RestartSec=10s
+RestartSec=5s
 StandardOutput=journal
 StandardError=journal
 
@@ -269,13 +315,20 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
+# btone-stream.service from earlier scaffolding is superseded —
+# twitch-streamd is the single owner of ffmpeg now.
+systemctl disable --now btone-stream.service 2>/dev/null || true
+rm -f /etc/systemd/system/btone-stream.service
+
 # Disable any previous xvfb unit (if upgrading from CPU deploy).
 systemctl disable --now xvfb.service 2>/dev/null || true
 rm -f /etc/systemd/system/xvfb.service
 
 systemctl daemon-reload
 systemctl enable xorg-headless.service
+systemctl enable xauth-share.service
 systemctl enable btone-bot.service
+systemctl enable twitch-streamd.service
 
 # --- 13. signal done --------------------------------------------------------
 # We can't start xorg-headless yet — it needs the new kernel + nvidia DRM,

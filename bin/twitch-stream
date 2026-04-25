@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Control the Twitch streamer via /run/twitch-streamd.sock.
+#
+# Usage:
+#   bin/twitch-stream START
+#   bin/twitch-stream STOP
+#   bin/twitch-stream STATUS    (default if no arg)
+#
+# Caller must be in the `streamcontrol` group. The daemon never echoes
+# the stream key; STATUS only reports running/stopped + pid + uptime.
+set -euo pipefail
+exec socat - UNIX-CONNECT:/run/twitch-streamd.sock <<<"${1:-STATUS}"
