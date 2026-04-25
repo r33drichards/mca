@@ -194,6 +194,18 @@ in
     # since we run our own Xorg we make it explicit.
     boot.kernelModules = [ "nvidia" "nvidia_modeset" "nvidia_uvm" "nvidia_drm" ];
 
+    # amazon-image.nix sets `nomodeset` + `vga=0x317` in kernelParams to
+    # use a simple text console — fine for non-GPU EC2, but it disables
+    # kernel mode-setting which Nvidia DRM requires. Filter them out.
+    boot.kernelParams = lib.mkForce (
+      builtins.filter
+        (p: !(lib.hasPrefix "vga=" p) && p != "nomodeset")
+        (lib.lists.unique (
+          # Reproduce the rest of amazon-image.nix's defaults:
+          [ "console=ttyS0,115200n8" "random.trust_cpu=on" "nvme_core.io_timeout=4294967295" ]
+        ))
+    );
+
     # Headless Xorg backed by the Nvidia GPU. Must run as root (the
     # nvidia X module needs CAP_SYS_ADMIN to talk to the GPU).
     systemd.services.xorg-headless = {
