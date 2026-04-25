@@ -375,6 +375,16 @@ if ! grep -q 'hidepid=invisible' /etc/fstab; then
 fi
 mount -o remount,hidepid=invisible /proc 2>/dev/null || true
 
+# Enable unprivileged user namespaces for bubblewrap (srt's Linux backend).
+# Ubuntu 24.04 ships with kernel.apparmor_restrict_unprivileged_userns=1 by
+# default, which blocks bwrap from creating its sandbox network namespace
+# ("bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"). Flip
+# the knob and persist via sysctl.d.
+cat >/etc/sysctl.d/60-bwrap-userns.conf <<'EOF'
+kernel.apparmor_restrict_unprivileged_userns = 0
+EOF
+sysctl --quiet -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+
 # --- 12.7 node + sandbox-runtime + claude code ------------------------------
 # Ubuntu 24.04 ships Node 18, which @anthropic-ai/claude-code requires
 # (>=18). Use NodeSource for Node 20 to be safe.
