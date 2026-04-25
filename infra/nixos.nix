@@ -196,6 +196,10 @@ in
         # always advertise it without this override.
         MESA_GL_VERSION_OVERRIDE = "3.3";
         MESA_GLSL_VERSION_OVERRIDE = "330";
+        # llvmpipe JIT-compiles shaders and segfaults in lp_rast_shade_tile
+        # under MC's first frame on Mesa 26. softpipe interprets GLSL
+        # without JIT — much slower but stable. Override at startup.
+        GALLIUM_DRIVER = "softpipe";
         JAVA_HOME = "${pkgs.temurin-bin-21}";
       };
 
