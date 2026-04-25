@@ -165,7 +165,11 @@ in
 
         fetch_modrinth fabric-api
         fetch_modrinth fabric-language-kotlin
-        fetch_modrinth sodium
+        # Sodium is intentionally OMITTED for the EC2 deploy. On a real
+        # GPU it reduces render-thread saturation, but under Mesa
+        # llvmpipe its advanced shader path segfaults in
+        # lp_rast_shade_tile (libgallium). Vanilla MC's renderer is
+        # slower but stable on software rasterizers.
 
         curl -sfL -o "$MODS/meteor-client-$MC.jar" \
           "https://meteorclient.com/api/download?version=$MC"
