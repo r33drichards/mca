@@ -92,19 +92,68 @@ world. These are documented in `coords.md` in the repo at
 
 ## Streaming controls (Twitch)
 
-The Twitch stream is auto-started on boot. Operator (sudo) commands:
+The Twitch stream is auto-started on boot, going to
+`https://www.twitch.tv/sleet1213`. You have **passwordless sudo access**
+to the streaming + bot services (configured in `/etc/sudoers.d/openclaw-services`).
+Use these directly when chat asks you to manage the stream — don't tell
+the user "ask the operator," just do it:
 
 ```bash
-systemctl status btone-stream     # is it live?
-sudo systemctl restart btone-stream    # if it died (e.g. Twitch dropped)
-sudo systemctl stop btone-stream       # to go offline
+# Live status (no sudo needed for is-active)
+sudo systemctl is-active btone-stream    # → "active" / "inactive" / "failed"
+
+# Confirm or report uptime + most recent error
+sudo systemctl status btone-stream | head -10
+
+# Recover from a stream drop / encoder hang
+sudo systemctl restart btone-stream
+
+# Take the stream offline on request
+sudo systemctl stop btone-stream
+
+# Bring it back
+sudo systemctl start btone-stream
+
+# Recent stream log lines (audio dropouts, RTMP timeouts, encoder errors)
+sudo journalctl -u btone-stream -n 50 --no-pager
 ```
 
-You generally don't need to touch streaming. Mention to chat that the
-stream is live at `twitch.tv/sleet1213` if asked.
+The same passwordless sudo applies to `btone-bot.service` (the MC client
+itself). If MC crashes or hangs, `sudo systemctl restart btone-bot`
+relaunches it; chat will see the bot disconnect and rejoin within ~30 s.
 
-**Never read `/etc/btone-stream/env`** — the Twitch stream key lives there.
-You don't need it; ffmpeg already has it via `EnvironmentFile=`.
+### Audio path
+
+Stream audio captures the **MC client's actual game sound**, not a
+synthetic source. The plumbing:
+
+1. `snd-aloop` kernel module creates a virtual ALSA card called
+   `Loopback` with two sub-devices (a playback side and a capture side).
+2. `~btone/.asoundrc` routes the MC client's default ALSA output to
+   `hw:Loopback,0,0` (the playback side).
+3. ffmpeg in `btone-stream.service` reads from `hw:Loopback,1,0` (the
+   capture side) — what MC played goes straight into the encoder.
+
+If chat reports no sound on the stream:
+
+```bash
+# Check the loopback card is loaded
+lsmod | grep snd_aloop
+# Check both sides of the loopback exist
+aplay -l | grep Loopback
+arecord -l | grep Loopback
+# Verify ffmpeg's audio input is connected
+sudo journalctl -u btone-stream -n 30 --no-pager | grep -iE 'alsa|audio|stream #|sample_fmt'
+```
+
+Common audio-issue fixes:
+
+- **Loopback not loaded** → `sudo modprobe snd-aloop` then `sudo systemctl restart btone-stream`.
+- **MC not actually emitting audio** (game muted in options) → `sudo journalctl -u btone-bot | grep -i 'soundsystem\|openal'`. If "Failed to open OpenAL device", the bot needs a restart: `sudo systemctl restart btone-bot`.
+- **Stream is up but silent** → ffmpeg can't read `hw:Loopback,1,0`. Restart stream: `sudo systemctl restart btone-stream`.
+
+**Never read `/etc/btone-stream/env`** — the Twitch stream key lives
+there. You don't need it; ffmpeg already has it via `EnvironmentFile=`.
 
 ## Behavioral rules
 

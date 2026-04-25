@@ -42,8 +42,17 @@ apt-get install -y --no-install-recommends \
 sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"Advanced options for Ubuntu>Ubuntu, with Linux ${KERNEL_VERSION}\"|" /etc/default/grub
 update-grub
 
-# --- 3. dummy audio device (kernel-level ALSA) ------------------------------
-echo snd-dummy >/etc/modules-load.d/snd-dummy.conf
+# --- 3. ALSA loopback (lets ffmpeg capture MC's actual audio) ---------------
+# snd-dummy was a silent placeholder — OpenAL was happy but ffmpeg got zeros.
+# snd-aloop creates a real two-sided card: MC plays into Loopback,0, ffmpeg
+# captures from Loopback,1. The btone user's ~/.asoundrc routes ALSA's
+# default device through it.
+rm -f /etc/modules-load.d/snd-dummy.conf
+echo snd-aloop >/etc/modules-load.d/snd-aloop.conf
+# Pre-create 2 substreams for stereo input/output.
+echo 'options snd-aloop pcm_substreams=2' >/etc/modprobe.d/snd-aloop.conf
+modprobe -r snd-dummy 2>/dev/null || true
+modprobe snd-aloop 2>/dev/null || true
 
 # --- 4. nvidia DRM modeset --------------------------------------------------
 # nvidia_drm needs modeset=1 to expose /dev/dri/card1 (the GPU's DRM node).
@@ -56,6 +65,22 @@ fi
 install -d -o btone -g btone -m 0755 "$BTONE_HOME/mods"
 install -d -o btone -g btone -m 0755 "$BTONE_HOME/config"
 usermod -aG audio,video btone
+
+# btone user's ALSA default → snd-aloop card 0, sub-device 0 (the
+# playback side). ffmpeg captures from sub-device 1 (the capture side).
+# `plug` plugin lets MC's OpenAL request whatever sample rate it wants
+# and ALSA resamples to the loopback's fixed format.
+cat >"$BTONE_HOME/.asoundrc" <<'EOF'
+pcm.!default {
+  type plug
+  slave.pcm "hw:Loopback,0,0"
+}
+ctl.!default {
+  type hw
+  card Loopback
+}
+EOF
+chown btone:btone "$BTONE_HOME/.asoundrc"
 
 # --- 6. options.txt: skip the Welcome/Accessibility dialog ------------------
 # MC 1.21+ shows AccessibilityOnboardingScreen on first launch, blocking
@@ -243,7 +268,7 @@ chmod 0600 /etc/btone-stream/env
 
 cat >/etc/systemd/system/btone-stream.service <<'EOF'
 [Unit]
-Description=Twitch RTMP streamer (x11grab :99 + h264_nvenc)
+Description=Twitch RTMP streamer (x11grab :99 + h264_nvenc + ALSA loopback)
 After=xorg-headless.service network-online.target btone-bot.service
 Wants=network-online.target
 
@@ -253,12 +278,16 @@ User=root
 EnvironmentFile=/etc/btone-stream/env
 Environment=DISPLAY=:99
 ExecStartPre=/bin/sh -c 'test -n "$STREAM_KEY" || { echo "STREAM_KEY empty in /etc/btone-stream/env" >&2; exit 1; }'
+# Audio: capture from the snd-aloop card's "1,0" sub-device — the other
+# end of what btone (MC) is playing into via ~/.asoundrc → Loopback,0,0.
+# Wrapped in fallback to anullsrc if the loopback isn't present (e.g. on
+# first boot before MC has played anything).
 ExecStart=/usr/bin/ffmpeg -nostdin -loglevel warning -hide_banner \
   -f x11grab -framerate 30 -video_size 1280x720 -i :99 \
-  -f lavfi -i anullsrc=r=44100:cl=stereo \
+  -f alsa -ac 2 -ar 48000 -thread_queue_size 1024 -i hw:Loopback,1,0 \
   -c:v h264_nvenc -preset p4 -tune ll -b:v 3500k -maxrate 3500k -bufsize 7000k \
   -g 60 -keyint_min 60 \
-  -c:a aac -b:a 160k -ar 44100 \
+  -c:a aac -b:a 160k -ar 48000 \
   -f flv rtmp://live.twitch.tv/app/${STREAM_KEY}
 Restart=on-failure
 RestartSec=10s
@@ -272,6 +301,26 @@ EOF
 # Disable any previous xvfb unit (if upgrading from CPU deploy).
 systemctl disable --now xvfb.service 2>/dev/null || true
 rm -f /etc/systemd/system/xvfb.service
+
+# --- 12.6 sudoers: openclaw (ubuntu) can manage the bot + stream services -
+# Lets the on-host openclaw skill drive systemctl on those units (no
+# arbitrary sudo). Only systemctl + journalctl, only the four units.
+cat >/etc/sudoers.d/openclaw-services <<'EOF'
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl start btone-bot.service
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl stop btone-bot.service
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl restart btone-bot.service
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl status btone-bot.service
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl is-active btone-bot.service
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl start btone-stream.service
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl stop btone-stream.service
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl restart btone-stream.service
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl status btone-stream.service
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl is-active btone-stream.service
+ubuntu ALL=(root) NOPASSWD: /usr/bin/journalctl -u btone-bot *
+ubuntu ALL=(root) NOPASSWD: /usr/bin/journalctl -u btone-stream *
+EOF
+chmod 0440 /etc/sudoers.d/openclaw-services
+visudo -cf /etc/sudoers.d/openclaw-services
 
 systemctl daemon-reload
 systemctl enable xorg-headless.service
