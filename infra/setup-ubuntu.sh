@@ -364,6 +364,61 @@ install -m 0644 -o root -g root \
   "/var/lib/btone/source/infra/srt-profile.json" \
   /etc/claude/srt-profile.json
 
+# --- 12.9 claude-tmux service + operator attach helper ---------------------
+# claude-launch.sh runs inside the tmux pty, drops into `srt -- claude`.
+# tmux itself runs OUTSIDE the sandbox (as claudeop) but every child
+# inherits the bubblewrap isolation.
+install -m 0755 -o root -g root \
+  "/var/lib/btone/source/infra/claude-launch.sh" \
+  /usr/local/bin/claude-launch.sh
+
+# Logfile for headless debugging — tmux pipe-pane writes everything the
+# session prints here, owned by claudeop so the pipe can write.
+install -m 0644 -o claudeop -g claudeop /dev/null /var/log/claude-session.log
+
+cat >/etc/systemd/system/claude-tmux.service <<'EOF'
+[Unit]
+Description=Sandboxed Claude Code, tmux-hosted
+After=network-online.target xorg-headless.service btone-bot.service twitch-streamd.service
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=claudeop
+Group=claudeop
+Environment=HOME=/home/claudeop
+ExecStart=/usr/bin/tmux -L claude new-session -d -s claude /usr/local/bin/claude-launch.sh
+ExecStartPost=/usr/bin/tmux -L claude pipe-pane -t claude:0 -O 'cat >> /var/log/claude-session.log'
+ExecStop=/usr/bin/tmux -L claude kill-server
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Attach helper (runs as ubuntu, sudo's into claudeop's tmux). Sudoers
+# fragment grants exactly the four tmux subcommands ubuntu may issue
+# against claudeop — no general sudo to that uid.
+cat >/usr/local/bin/claude-attach <<'EOF'
+#!/usr/bin/env bash
+exec sudo -u claudeop /usr/bin/tmux -L claude attach -t claude
+EOF
+chmod 0755 /usr/local/bin/claude-attach
+
+cat >/etc/sudoers.d/claudeop <<'EOF'
+ubuntu ALL=(claudeop) NOPASSWD: /usr/bin/tmux -L claude attach -t claude
+ubuntu ALL=(claudeop) NOPASSWD: /usr/bin/tmux -L claude send-keys *
+ubuntu ALL=(claudeop) NOPASSWD: /usr/bin/tmux -L claude capture-pane *
+ubuntu ALL=(claudeop) NOPASSWD: /usr/bin/tmux -L claude list-sessions
+EOF
+chmod 0440 /etc/sudoers.d/claudeop
+visudo -cf /etc/sudoers.d/claudeop
+
+systemctl daemon-reload
+systemctl enable claude-tmux.service
+
 # --- 13. signal done --------------------------------------------------------
 # We can't start xorg-headless yet — it needs the new kernel + nvidia DRM,
 # which only come after a reboot. The wrapper does the reboot.
