@@ -188,20 +188,28 @@ cmd_claude() {
 }
 
 cmd_claude_send() {
+  # Pipe message through stdin → tmux load-buffer → paste-buffer → Enter.
+  # Avoids shell-quoting layers (local → ssh → sudo → tmux argv) which
+  # would otherwise let $(...) inside a message get evaluated remotely.
   local ip msg
   ip=$(resolve_ip)
   msg="$*"
   [[ -n "$msg" ]] || die "usage: $0 claude-send <text>"
-  ssh "${ssh_args[@]}" "$SSH_USER@$ip" \
-    "sudo -u claudeop /usr/bin/tmux -L claude send-keys -t claude:0 -- $(printf '%q' "$msg") Enter"
+  printf '%s' "$msg" | ssh "${ssh_args[@]}" "$SSH_USER@$ip" "
+    sudo -u claudeop /usr/bin/tmux -L claude load-buffer - &&
+    sudo -u claudeop /usr/bin/tmux -L claude paste-buffer -t claude:0 -d &&
+    sudo -u claudeop /usr/bin/tmux -L claude send-keys -t claude:0 Enter
+  "
 }
 
 cmd_claude_peek() {
-  local ip
+  local ip n
   ip=$(resolve_ip)
+  n="${1:-30}"
+  [[ "$n" =~ ^[0-9]+$ ]] || die "claude-peek expects a numeric line count, got: $n"
   ssh "${ssh_args[@]}" "$SSH_USER@$ip" \
     "sudo -u claudeop /usr/bin/tmux -L claude capture-pane -t claude:0 -p" \
-    | tail -"${1:-30}"
+    | tail -n "$n"
 }
 
 cmd_destroy() {

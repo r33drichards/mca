@@ -240,6 +240,29 @@ Layered defense:
 A bypass would need to break at least three of these layers
 simultaneously. None alone is enough.
 
+### Threat model boundary
+
+The "Claude can't see the key" claim is scoped to the **sandboxed
+Claude as `claudeop`**. It is **not** a defense against an attacker
+who already has shell access on the EC2 host:
+
+- Anyone who can `cat /proc/<ffmpeg-pid>/cmdline` recovers the rtmp
+  URL with the key embedded. We mitigate this for the sandboxed
+  Claude by mounting `/proc` with `hidepid=invisible`, which makes
+  other users' /proc entries invisible to non-root non-ffmpeg-user
+  processes. But `root`, `streamd`, or anyone the operator gives sudo
+  to can still read it.
+- ffmpeg cannot read the rtmp URL from anywhere except argv (or env-
+  via-shell-expansion). Keeping the secret out of argv would require
+  a wrapper that holds an open stdin pipe, which neither ffmpeg nor
+  any major rtmp client supports natively. A real fix is `nginx-rtmp`
+  as a localhost RTMP relay so ffmpeg pushes to a keyless local URL
+  and nginx adds the key — out of scope for v1.
+
+Treat this as a known limit. The design protects against the
+sandboxed Claude as the only adversary; full defense in depth against
+arbitrary host-shell access is a follow-up.
+
 ## What this design doesn't fix
 
 - **Claude can grief the bot.** It has full RPC access to MC via the

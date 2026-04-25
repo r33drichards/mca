@@ -44,14 +44,20 @@
       "/var/lib/twitch-streamd",
       "/var/lib/btone/.minecraft/saves",
       "/root",
-      "/proc/[0-9]*/environ",
-      "/proc/[0-9]*/cmdline",
-      "/proc/[0-9]*/maps",
-      "/proc/[0-9]*/mem",
-      "/proc/[0-9]*/auxv",
-      "/proc/[0-9]*/fd"
+      "/proc"
     ],
-    "allowRead": [],
+    "allowRead": [
+      "/proc/self",
+      "/proc/cpuinfo",
+      "/proc/meminfo",
+      "/proc/stat",
+      "/proc/version",
+      "/proc/uptime",
+      "/proc/loadavg",
+      "/proc/sys/kernel/random/uuid",
+      "/proc/sys/kernel/osrelease",
+      "/proc/sys/kernel/ostype"
+    ],
     "allowWrite": [
       "/var/lib/btone/source",
       "/home/claudeop",

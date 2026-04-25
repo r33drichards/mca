@@ -265,19 +265,30 @@ cat >/etc/systemd/system/xauth-share.service <<'EOF'
 Description=Stamp a shared xauth cookie for streamd to read DISPLAY=:99
 After=xorg-headless.service
 Requires=xorg-headless.service
+BindsTo=xorg-headless.service
 PartOf=xorg-headless.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Wait briefly for Xorg to bind :99 before stamping the cookie.
-ExecStartPre=/bin/sh -c 'for i in 1 2 3 4 5; do [ -e /tmp/.X11-unix/X99 ] && exit 0; sleep 1; done; exit 1'
+# Wait up to 30s for Xorg to bind :99 before stamping the cookie.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /tmp/.X11-unix/X99 ] && exit 0; sleep 1; done; exit 1'
 ExecStart=/usr/bin/install -m 0640 -o root -g streamd /dev/null /var/lib/twitch-streamd/.Xauthority
 ExecStart=/bin/sh -c 'XAUTHORITY=/var/lib/twitch-streamd/.Xauthority /usr/bin/xauth add :99 . $(/usr/bin/xxd -l 16 -p /dev/urandom)'
 ExecStart=/bin/sh -c 'DISPLAY=:99 /usr/bin/xhost +SI:localuser:streamd >/dev/null'
 
 [Install]
 WantedBy=xorg-headless.service
+EOF
+
+# Stitch xauth-share back together with xorg-headless so a manual
+# `systemctl restart xorg-headless` re-runs xauth-share. PartOf only
+# propagates STOP; we need an ExecStartPost on xorg-headless to actually
+# kick xauth-share back up after Xorg restarts.
+mkdir -p /etc/systemd/system/xorg-headless.service.d
+cat >/etc/systemd/system/xorg-headless.service.d/restart-xauth.conf <<'EOF'
+[Service]
+ExecStartPost=/bin/sh -c 'systemctl is-enabled xauth-share.service >/dev/null 2>&1 && systemctl restart xauth-share.service || true'
 EOF
 
 # Daemon owns ffmpeg lifecycle + the unix socket. No env override —
@@ -340,6 +351,16 @@ if ! id claudeop >/dev/null 2>&1; then
 fi
 usermod -aG streamcontrol claudeop
 install -d -o claudeop -g claudeop -m 0755 /home/claudeop
+
+# Hide /proc entries owned by other users — this is what actually
+# protects the Twitch key (which appears in ffmpeg's argv via
+# /proc/<pid>/cmdline) from any non-root non-streamd uid, including
+# claudeop. srt's filesystem deny rules layer on top of this; this
+# remount is the kernel-level guarantee.
+if ! grep -q 'hidepid=invisible' /etc/fstab; then
+  echo 'proc /proc proc defaults,hidepid=invisible 0 0' >> /etc/fstab
+fi
+mount -o remount,hidepid=invisible /proc 2>/dev/null || true
 
 # --- 12.7 node + sandbox-runtime + claude code ------------------------------
 # Ubuntu 24.04 ships Node 18, which @anthropic-ai/claude-code requires
@@ -412,12 +433,31 @@ ubuntu ALL=(claudeop) NOPASSWD: /usr/bin/tmux -L claude attach -t claude
 ubuntu ALL=(claudeop) NOPASSWD: /usr/bin/tmux -L claude send-keys *
 ubuntu ALL=(claudeop) NOPASSWD: /usr/bin/tmux -L claude capture-pane *
 ubuntu ALL=(claudeop) NOPASSWD: /usr/bin/tmux -L claude list-sessions
+ubuntu ALL=(claudeop) NOPASSWD: /usr/bin/tmux -L claude load-buffer -
+ubuntu ALL=(claudeop) NOPASSWD: /usr/bin/tmux -L claude paste-buffer *
 EOF
 chmod 0440 /etc/sudoers.d/claudeop
 visudo -cf /etc/sudoers.d/claudeop
 
 systemctl daemon-reload
 systemctl enable claude-tmux.service
+
+# --- 12.10 try-restart things whose source files were updated ---------------
+# Re-runs of setup overwrite /usr/local/bin/twitch-streamd and
+# claude-launch.sh; without a restart, the running services keep using
+# the old code. try-restart is a no-op if the unit isn't currently active.
+systemctl daemon-reload
+systemctl try-restart twitch-streamd.service 2>/dev/null || true
+systemctl try-restart claude-tmux.service 2>/dev/null || true
+
+# Warn loudly if STREAM_KEY is still empty so the operator notices.
+if grep -q '^STREAM_KEY=$' /etc/btone-stream/env; then
+  echo ""
+  echo "  [setup] NOTE: STREAM_KEY in /etc/btone-stream/env is empty."
+  echo "         Twitch streaming will refuse to start until populated."
+  echo "         Edit the file (sudo only) then: systemctl restart twitch-streamd"
+  echo ""
+fi
 
 # --- 13. signal done --------------------------------------------------------
 # We can't start xorg-headless yet — it needs the new kernel + nvidia DRM,
