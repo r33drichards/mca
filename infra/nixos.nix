@@ -203,15 +203,15 @@ in
       serviceConfig = {
         Type = "simple";
         User = "root";
-        # /run/opengl-driver/lib/xorg/modules is where NixOS aggregates
-        # the nvidia X driver (nvidia_drv.so + libglx etc.). Without it,
-        # Xorg's default ModulePath sees only xorg-server's own modules
-        # and fails with "couldn't open module nvidia".
+        # The nvidia X driver (nvidia_drv.so) lives in the nvidia package's
+        # `bin` output. Without explicitly adding that path, Xorg's default
+        # ModulePath sees only xorg-server's own modules and fails with
+        # "couldn't open module nvidia".
         ExecStart = lib.concatStringsSep " " [
           "${pkgs.xorg.xorgserver}/bin/Xorg"
           cfg.display
           "-config /etc/X11/xorg-headless.conf"
-          "-modulepath /run/opengl-driver/lib/xorg/modules,${pkgs.xorg.xorgserver}/lib/xorg/modules"
+          "-modulepath ${config.hardware.nvidia.package.bin}/lib/xorg/modules,${pkgs.xorg.xorgserver}/lib/xorg/modules"
           "-nolisten tcp"
           "-noreset"
           "-logfile /var/log/xorg-headless.log"
