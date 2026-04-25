@@ -24,8 +24,13 @@ in
 
     username = lib.mkOption {
       type = lib.types.str;
-      default = "Bot";
-      description = "Offline-mode in-game username.";
+      default = "BotEC2";
+      description = ''
+        Offline-mode in-game username. Must be unique on the server —
+        if the laptop-side bot is already connected as "Bot", the cloud
+        deploy needs its own name (default "BotEC2") or the server will
+        refuse the duplicate connection.
+      '';
     };
 
     modJarPath = lib.mkOption {
