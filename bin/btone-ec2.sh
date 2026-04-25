@@ -1,38 +1,38 @@
 #!/usr/bin/env bash
-# btone-ec2 — provision and operate a headless btone-mod-c instance.
+# btone-ec2 — provision and operate a headless btone-mod-c instance
+# (Ubuntu 24.04, software-rendered MC under Xvfb + snd-dummy).
 #
 # Subcommands:
-#   ami            Print the latest NixOS x86_64 AMI ID for $AWS_REGION.
-#   provision      Deploy/update the CloudFormation stack.
-#   ip             Print the instance's Elastic IP from stack outputs.
-#   ssh            Open an interactive SSH session as root.
-#   push           rsync the flake to /etc/nixos/btone and scp the mod jar.
-#   rebuild        ssh + nixos-rebuild switch --flake /etc/nixos/btone#btone-ec2.
-#   tunnel         Background ssh -L 25591:127.0.0.1:25591 + scp the bridge
-#                  config so bin/btone-cli works locally.
-#   logs           journalctl -fu btone-bot on the remote.
-#   restart        systemctl restart btone-bot on the remote.
-#   destroy        aws cloudformation delete-stack.
+#   provision   Deploy/update the CloudFormation stack.
+#   ip          Print the instance's Elastic IP from stack outputs.
+#   ssh         Open an interactive SSH session as `ubuntu`.
+#   setup       scp infra/setup-ubuntu.sh to the box, run as root.
+#               Run once after provision (idempotent).
+#   push        scp the locally-built mod-c jar; restart bot.
+#   tunnel      Background ssh -L 25591:127.0.0.1:25591 + scp the bridge
+#               config so bin/btone-cli works locally.
+#   logs        journalctl -fu btone-bot on the remote.
+#   restart     systemctl restart btone-bot on the remote.
+#   destroy     aws cloudformation delete-stack.
 #
 # Env / config:
-#   AWS_REGION     defaults to $AWS_DEFAULT_REGION or us-east-1.
+#   AWS_REGION     defaults to us-west-2.
 #   STACK_NAME     defaults to btone-ec2.
 #   KEY_NAME       AWS key pair name (required for `provision`).
 #   KEY_FILE       Path to private key for SSH (default ~/.ssh/$KEY_NAME.pem).
-#   INSTANCE_TYPE  defaults to t3.large.
-#
-# All other steps read state from the CloudFormation outputs — no local
-# state file. The skill's runbook walks through the happy path; this
-# wrapper is the same commands as one-liners.
+#   INSTANCE_TYPE  defaults to c7i.xlarge.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-west-2}}"
 STACK_NAME="${STACK_NAME:-btone-ec2}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-g4dn.xlarge}"
 KEY_NAME="${KEY_NAME:-}"
 KEY_FILE="${KEY_FILE:-${HOME}/.ssh/${KEY_NAME}.pem}"
-BRIDGE_PORT="${BRIDGE_PORT:-25591}"
+# Default to 25592 locally because most operators have the laptop-side
+# bot already listening on 25591. Override via BRIDGE_PORT env.
+BRIDGE_PORT="${BRIDGE_PORT:-25592}"
+SSH_USER="ubuntu"
 
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die()  { log "ERROR: $*"; exit 1; }
@@ -42,10 +42,9 @@ need aws
 need jq
 
 stack_output() {
-  local key="$1"
   aws cloudformation describe-stacks \
     --region "$AWS_REGION" --stack-name "$STACK_NAME" \
-    --query "Stacks[0].Outputs[?OutputKey=='${key}'].OutputValue" \
+    --query "Stacks[0].Outputs[?OutputKey=='${1}'].OutputValue" \
     --output text 2>/dev/null
 }
 
@@ -56,31 +55,14 @@ resolve_ip() {
   printf '%s' "$ip"
 }
 
-cmd_ami() {
-  # Owner 427812963091 is the official NixOS AMI publishing account.
-  # AMIs are named like `nixos/25.11.9418.c7f47036d3df-x86_64-linux` and
-  # GC'd after 90 days, so always resolve the latest dynamically.
-  aws ec2 describe-images \
-    --region "$AWS_REGION" \
-    --owners 427812963091 \
-    --filters "Name=name,Values=nixos/*" \
-              "Name=architecture,Values=x86_64" \
-              "Name=virtualization-type,Values=hvm" \
-              "Name=root-device-type,Values=ebs" \
-    --query 'sort_by(Images,&CreationDate)[-1].ImageId' \
-    --output text
-}
+ssh_args=(-i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
 
 cmd_provision() {
   [[ -n "$KEY_NAME" ]] || die "set KEY_NAME=<aws-key-pair-name>"
-  local ami my_ip cidr
-  ami=$(cmd_ami)
-  [[ -n "$ami" && "$ami" != "None" ]] || die "no NixOS AMI found in $AWS_REGION"
-  log "AMI: $ami"
-
-  my_ip=$(curl -s4 https://api.ipify.org || true)
-  cidr="${ALLOWED_SSH_CIDR:-${my_ip:+${my_ip}/32}}"
-  [[ -n "$cidr" ]] || die "could not determine your IP; set ALLOWED_SSH_CIDR=x.x.x.x/32"
+  local cidr
+  cidr="${ALLOWED_SSH_CIDR:-$(curl -s4 https://api.ipify.org)/32}"
+  [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] \
+    || die "could not determine v4 IP; set ALLOWED_SSH_CIDR=x.x.x.x/32"
   log "SSH CIDR: $cidr"
 
   aws cloudformation deploy \
@@ -91,7 +73,6 @@ cmd_provision() {
         "KeyName=$KEY_NAME" \
         "InstanceType=$INSTANCE_TYPE" \
         "AllowedSshCidr=$cidr" \
-        "NixosAmiId=$ami" \
     --no-fail-on-empty-changeset
 
   log "stack ready. IP: $(resolve_ip)"
@@ -103,89 +84,98 @@ cmd_ssh() {
   local ip
   ip=$(resolve_ip)
   [[ -f "$KEY_FILE" ]] || die "key file not found: $KEY_FILE (set KEY_FILE=...)"
-  exec ssh -i "$KEY_FILE" -o StrictHostKeyChecking=accept-new "root@$ip" "$@"
+  exec ssh "${ssh_args[@]}" "$SSH_USER@$ip" "$@"
+}
+
+# Wait for SSH to come up after a fresh launch.
+wait_ssh() {
+  local ip="$1"
+  local i
+  for i in $(seq 1 60); do
+    ssh "${ssh_args[@]}" -o ConnectTimeout=5 -o BatchMode=yes "$SSH_USER@$ip" 'true' 2>/dev/null && return 0
+    sleep 5
+  done
+  die "ssh never came up after 5min"
+}
+
+cmd_setup() {
+  local ip
+  ip=$(resolve_ip)
+  log "waiting for ssh on $ip"
+  wait_ssh "$ip"
+
+  log "uploading setup script"
+  scp "${ssh_args[@]}" "$REPO_ROOT/infra/setup-ubuntu.sh" "$SSH_USER@$ip:/tmp/setup-ubuntu.sh"
+
+  log "running setup as root (this takes ~5-10min — apt + nvidia driver + mod build)"
+  ssh "${ssh_args[@]}" "$SSH_USER@$ip" "sudo bash /tmp/setup-ubuntu.sh" 2>&1 | tail -30
+
+  log "rebooting to load 6.8 kernel + nvidia DRM module"
+  ssh "${ssh_args[@]}" "$SSH_USER@$ip" "sudo reboot" 2>/dev/null || true
+  sleep 30
+  wait_ssh "$ip"
+
+  log "starting btone-bot now that kernel/DRM are ready"
+  ssh "${ssh_args[@]}" "$SSH_USER@$ip" "sudo systemctl start btone-bot" 2>&1 | tail -5
+  log "setup complete. Watch logs: $0 logs   Tunnel: $0 tunnel"
 }
 
 cmd_push() {
-  local ip repo_url
+  # The mod is BUILT on the instance — push = `git pull && ./gradlew build &&
+  # systemctl restart btone-bot`. Refuses if local mod-c/ has uncommitted
+  # changes (git pull can't see them).
+  local ip
   ip=$(resolve_ip)
 
-  # The mod jar is now BUILT on the instance as part of nixos-rebuild
-  # (flake's packages.btone-mod-c derivation). No local gradle build,
-  # no scp. The git-clone step is the only push artifact.
-  repo_url=$(git -C "$REPO_ROOT" config --get remote.origin.url)
-  [[ -n "$repo_url" ]] || die "no git remote.origin.url — set one or use a different push mechanism"
-  # Refuse to deploy with uncommitted changes to anything that ships
-  # (flake.nix, infra/nixos.nix, mod-c/) — git pull can't see them.
-  if ! git -C "$REPO_ROOT" diff --quiet HEAD -- flake.nix infra/nixos.nix mod-c/ 2>/dev/null; then
-    die "uncommitted changes to flake.nix, infra/nixos.nix, or mod-c/ — commit + push first"
+  if ! git -C "$REPO_ROOT" diff --quiet HEAD -- mod-c/ 2>/dev/null; then
+    die "uncommitted changes under mod-c/ — commit + push first (git pull on the instance can't see them)"
   fi
   local sha
   sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
-  log "deploying $repo_url @ $sha"
+  log "deploying mod-c @ $sha"
 
-  # Stock NixOS AMI has no git pre-installed; nix-shell -p git is the
-  # one-shot escape hatch that works even before flakes are enabled.
-  ssh -i "$KEY_FILE" "root@$ip" "
+  ssh "${ssh_args[@]}" "$SSH_USER@$ip" "
     set -e
-    mkdir -p /var/lib/btone/mods
-    nix-shell -p git --run '
+    sudo -u btone -H bash <<EOSH
       set -e
-      if [ -d /etc/nixos/btone/.git ]; then
-        git -C /etc/nixos/btone fetch origin
-        git -C /etc/nixos/btone reset --hard $sha
-      else
-        rm -rf /etc/nixos/btone
-        git clone $repo_url /etc/nixos/btone
-        git -C /etc/nixos/btone reset --hard $sha
-      fi
-    '
+      cd /var/lib/btone/source
+      git fetch origin
+      git reset --hard $sha
+      cd mod-c
+      JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew --no-daemon --console=plain build
+EOSH
+    sudo install -o btone -g btone -m 0644 \
+      /var/lib/btone/source/mod-c/build/libs/btone-mod-c-0.1.0.jar \
+      /var/lib/btone/mods/btone-mod-c-0.1.0.jar
+    sudo systemctl restart btone-bot
   "
-  ssh -i "$KEY_FILE" "root@$ip" "chown -R btone:btone /var/lib/btone 2>/dev/null || true"
-}
-
-cmd_rebuild() {
-  local ip
-  ip=$(resolve_ip)
-  # NIX_CONFIG enables flakes for the duration of this command, which
-  # matters on the very first rebuild — stock NixOS AMIs ship with
-  # flakes off. The activated config (via nix.settings in nixos.nix)
-  # makes this redundant on subsequent rebuilds, but harmless.
-  ssh -i "$KEY_FILE" "root@$ip" \
-    "NIX_CONFIG='experimental-features = nix-command flakes' \
-     nixos-rebuild switch --flake /etc/nixos/btone#btone-ec2 && \
-     chown -R btone:btone /var/lib/btone"
+  log "bot restarted; tail with: $0 logs"
 }
 
 cmd_tunnel() {
-  local ip cfg_dir cfg_path
+  local ip cfg_dir cfg_path port
   ip=$(resolve_ip)
   cfg_dir="$HOME/btone-mc-work/config"
   cfg_path="$cfg_dir/btone-bridge.json"
   mkdir -p "$cfg_dir"
 
   log "fetching bridge config from instance"
-  scp -i "$KEY_FILE" \
-    "root@$ip:/var/lib/btone/.minecraft/config/btone-bridge.json" \
-    "$cfg_path" \
-    || die "bridge config not found on instance — is btone-bot running? (try: $0 logs)"
+  ssh "${ssh_args[@]}" "$SSH_USER@$ip" "sudo cat /var/lib/btone/config/btone-bridge.json" \
+    > "$cfg_path" 2>/dev/null \
+    || die "bridge config not found — is btone-bot running? (try: $0 logs)"
 
-  # Patch the host to localhost (config records 127.0.0.1 already, but the
-  # port may have been auto-bumped if 25591 was busy in MC's JVM).
-  local port
   port=$(jq -r .port "$cfg_path")
-  log "bridge port on instance: $port; opening local tunnel localhost:$BRIDGE_PORT -> instance:$port"
+  log "bridge port on instance: $port; opening tunnel localhost:$BRIDGE_PORT -> instance:$port"
 
   pkill -f "ssh.*-L $BRIDGE_PORT:127.0.0.1" 2>/dev/null || true
-  ssh -i "$KEY_FILE" -fN -L "$BRIDGE_PORT:127.0.0.1:$port" "root@$ip"
+  ssh "${ssh_args[@]}" -fN -L "$BRIDGE_PORT:127.0.0.1:$port" "$SSH_USER@$ip"
 
-  # Rewrite the local config to use $BRIDGE_PORT (what bin/btone-cli reads).
   jq --argjson p "$BRIDGE_PORT" '.port = $p' "$cfg_path" > "$cfg_path.tmp" && mv "$cfg_path.tmp" "$cfg_path"
   log "tunnel up. test with: bin/btone-cli player.state"
 }
 
-cmd_logs() { cmd_ssh -- "journalctl -fu btone-bot"; }
-cmd_restart() { cmd_ssh -- "systemctl restart btone-bot"; }
+cmd_logs()    { cmd_ssh -- "sudo journalctl -fu btone-bot"; }
+cmd_restart() { cmd_ssh -- "sudo systemctl restart btone-bot"; }
 
 cmd_destroy() {
   log "deleting stack $STACK_NAME in $AWS_REGION"
@@ -204,12 +194,11 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
-  ami)        cmd_ami "$@" ;;
   provision)  cmd_provision "$@" ;;
   ip)         cmd_ip "$@" ;;
   ssh)        cmd_ssh "$@" ;;
+  setup)      cmd_setup "$@" ;;
   push)       cmd_push "$@" ;;
-  rebuild)    cmd_rebuild "$@" ;;
   tunnel)     cmd_tunnel "$@" ;;
   logs)       cmd_logs "$@" ;;
   restart)    cmd_restart "$@" ;;
