@@ -69,5 +69,5 @@
     "*": ["/usr/bin", "/usr/lib", "/usr/share", "/usr/local", "/lib", "/lib64", "/bin", "/sbin"]
   },
   "enableWeakerNestedSandbox": false,
-  "enableWeakerNetworkIsolation": false
+  "enableWeakerNetworkIsolation": true
 }
