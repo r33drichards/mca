@@ -263,6 +263,54 @@ Treat this as a known limit. The design protects against the
 sandboxed Claude as the only adversary; full defense in depth against
 arbitrary host-shell access is a follow-up.
 
+## v1 deployment state (2026-04-25)
+
+What works on the live g4dn.xlarge stack right now:
+- All five systemd units active: xorg-headless, xauth-share,
+  twitch-streamd, btone-bot, claude-tmux.
+- Three-uid separation enforced. `claudeop` is denied:
+  - `/etc/btone-stream/env` (kernel uid check; verified `EACCES`)
+  - `/proc/<other-uid>/*` (mounted with `hidepid=invisible`; verified
+    `ENOENT` for streamd's pid)
+  - `169.254.169.254` IMDS (srt deniedDomains + the netns has no route)
+- OUTSIDE the sandbox: `claudeop` can drive both surfaces correctly:
+  - `curl 127.0.0.1:25591/health` → 401 (bridge alive, no auth token
+    in plain curl — expected)
+  - `/var/lib/btone/source/bin/twitch-stream STATUS` → `stopped`
+- The `tmux` session + `claude-attach` + `claude-send` operator path
+  exists and is wired up. OAuth flow not yet completed.
+
+What does NOT work in v1 (deferred to v2):
+- INSIDE the sandbox, `srt` still:
+  - rejects `socket(AF_UNIX, SOCK_STREAM, 0)` with `EPERM` even with
+    `allowUnixSockets` set, so `bin/twitch-stream` from inside the
+    sandbox fails
+  - puts the sandbox in a fresh netns where `127.0.0.1:25591` has no
+    service, even with `enableWeakerNetworkIsolation: true`
+- Net result: a sandboxed Claude can authenticate to api.anthropic.com,
+  edit `/var/lib/btone/source/`, and push git, but cannot drive the
+  bot bridge or trigger a stream from inside its sandbox.
+
+### v2 paths (pick one)
+
+a. **Domain-wrapper for bridge + streamd**: write a tiny localhost
+   HTTP server bound to a hostname (`bot.local` in /etc/hosts) that
+   exposes `/bridge/*` (proxies to 127.0.0.1:25591) and `/stream/*`
+   (proxies to /run/twitch-streamd/sock). srt sees a normal HTTPS
+   call to an allowlisted domain. ~50 lines.
+
+b. **Switch to firejail**: firejail's local-IPC story is more
+   permissive. Reuses the existing uid separation; just swaps the
+   wrapper.
+
+c. **Patch srt's profile schema**: if `allowUnixSockets` is supposed
+   to seccomp-allow AF_UNIX `socket()`, this is an upstream bug. File
+   it, ship a workaround in the meantime.
+
+The security boundary (key isolation, IMDS deny, /proc isolation, FS
+allowlist) is independent of the v2 functional fixes — it's working
+now and the v2 work doesn't weaken it.
+
 ## What this design doesn't fix
 
 - **Claude can grief the bot.** It has full RPC access to MC via the
