@@ -33,7 +33,7 @@ apt-get install -y --no-install-recommends \
   openjdk-21-jre-headless openjdk-21-jdk-headless \
   python3 python3-pip python3-venv \
   jq curl ca-certificates git \
-  xserver-xorg-core xinit xauth \
+  xserver-xorg-core xinit xauth x11-xserver-utils \
   pulseaudio pulseaudio-utils alsa-utils \
   mesa-utils \
   ffmpeg \
@@ -308,12 +308,18 @@ Type=simple
 User=streamd
 Group=streamd
 SupplementaryGroups=video streamcontrol
+# RuntimeDirectory= creates /run/twitch-streamd/ owned by User:Group at
+# mode 0755, automatically removed on stop. The daemon's unix socket
+# lives there as /run/twitch-streamd/sock — streamd writes it, group
+# `streamcontrol` can connect (the daemon chmods 0660 streamd:streamcontrol).
+RuntimeDirectory=twitch-streamd
+RuntimeDirectoryMode=0755
 EnvironmentFile=/etc/btone-stream/env
 Environment=DISPLAY=:99
 Environment=XAUTHORITY=/var/lib/twitch-streamd/.Xauthority
 ExecStart=/usr/local/bin/twitch-streamd
 ProtectSystem=strict
-ReadWritePaths=/run /var/lib/twitch-streamd
+ReadWritePaths=/var/lib/twitch-streamd
 ProtectHome=true
 PrivateTmp=false
 NoNewPrivileges=true

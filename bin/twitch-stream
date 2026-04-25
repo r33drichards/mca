@@ -9,4 +9,4 @@
 # Caller must be in the `streamcontrol` group. The daemon never echoes
 # the stream key; STATUS only reports running/stopped + pid + uptime.
 set -euo pipefail
-exec socat - UNIX-CONNECT:/run/twitch-streamd.sock <<<"${1:-STATUS}"
+exec socat - UNIX-CONNECT:/run/twitch-streamd/sock <<<"${1:-STATUS}"

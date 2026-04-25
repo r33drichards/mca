@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-SOCKET_PATH = "/run/twitch-streamd.sock"
+SOCKET_PATH = "/run/twitch-streamd/sock"
 DISPLAY = os.environ.get("DISPLAY", ":99")
 XAUTHORITY = os.environ.get("XAUTHORITY", "/var/lib/twitch-streamd/.Xauthority")
 
