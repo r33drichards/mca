@@ -52,16 +52,16 @@ in
       default = "0.19.2";
     };
 
-    xvfbDisplay = lib.mkOption {
+    display = lib.mkOption {
       type = lib.types.str;
       default = ":99";
-      description = "Virtual framebuffer DISPLAY value the bot inherits.";
+      description = "DISPLAY value the bot inherits.";
     };
 
-    xvfbResolution = lib.mkOption {
+    resolution = lib.mkOption {
       type = lib.types.str;
-      default = "1280x720x24";
-      description = "Xvfb -screen 0 argument (WxHxDepth).";
+      default = "1280x720";
+      description = "Virtual display resolution.";
     };
   };
 
@@ -69,6 +69,9 @@ in
     ec2.hvm = true;
 
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
+    # The proprietary Nvidia driver is non-free; allow it explicitly.
+    nixpkgs.config.allowUnfree = true;
 
     networking.hostName = "btone-ec2";
     networking.firewall.allowedTCPPorts = [ 22 ];
@@ -83,8 +86,27 @@ in
       };
     };
 
-    # Mesa + llvmpipe — software OpenGL for the rendered MC client.
+    # Nvidia driver — proprietary closed-source. The Tesla T4 in g4dn.xlarge
+    # works with the production branch.
     hardware.graphics.enable = true;
+    hardware.nvidia = {
+      modesetting.enable = true;
+      open = false;
+      nvidiaSettings = false;
+      powerManagement.enable = false;
+      package = config.boot.kernelPackages.nvidiaPackages.production;
+    };
+
+    # services.xserver here is only used for its side-effect of pulling in
+    # the Nvidia X module + libGL etc. — we don't run the standard X session
+    # (no display manager, no autorun); xorg-headless.service below starts
+    # Xorg the way we want it.
+    services.xserver = {
+      enable = true;
+      autorun = false;
+      videoDrivers = [ "nvidia" ];
+      displayManager.startx.enable = true;  # disables LightDM/GDM
+    };
 
     environment.systemPackages = with pkgs; [
       temurin-bin-21
@@ -95,8 +117,8 @@ in
       portablemc
       xorg.xorgserver
       xorg.xrandr
-      mesa
-      mesa-demos  # glxinfo, useful for debugging GL setup over SSH
+      mesa-demos          # glxinfo, useful for debugging GL setup over SSH
+      pciutils            # lspci — Sodium probes for GPU info via this
     ];
 
     environment.sessionVariables = {
@@ -118,24 +140,69 @@ in
       "d /var/lib/btone/config 0755 btone btone -"
     ];
 
-    # Virtual framebuffer. Plain Xvfb — no window manager, no compositor.
-    systemd.services.xvfb = {
-      description = "Xvfb virtual framebuffer for the btone bot";
+    # Headless Xorg config. AllowEmptyInitialConfiguration makes the
+    # Nvidia driver bring up Xorg with no monitor connected, and the
+    # virtual ModeLine gives the bot a real framebuffer to render into.
+    environment.etc."X11/xorg-headless.conf".text = ''
+      Section "ServerLayout"
+        Identifier "Layout0"
+        Screen 0 "Screen0" 0 0
+      EndSection
+
+      Section "Device"
+        Identifier "Device0"
+        Driver     "nvidia"
+        VendorName "NVIDIA Corporation"
+        Option     "AllowEmptyInitialConfiguration" "true"
+      EndSection
+
+      Section "Monitor"
+        Identifier "Monitor0"
+        HorizSync   28.0 - 80.0
+        VertRefresh 48.0 - 75.0
+        ModeLine    "${cfg.resolution}" 74.48 1280 1336 1472 1664 720 721 724 746 -HSync +Vsync
+        Option      "DPMS"
+      EndSection
+
+      Section "Screen"
+        Identifier "Screen0"
+        Device     "Device0"
+        Monitor    "Monitor0"
+        DefaultDepth 24
+        SubSection "Display"
+          Depth 24
+          Modes "${cfg.resolution}"
+        EndSubSection
+      EndSection
+    '';
+
+    # Headless Xorg backed by the Nvidia GPU. Must run as root (the
+    # nvidia X module needs CAP_SYS_ADMIN to talk to the GPU).
+    systemd.services.xorg-headless = {
+      description = "Headless Xorg server (Nvidia GPU) for the btone bot";
       wantedBy = [ "multi-user.target" ];
+      after = [ "systemd-udev-settle.service" "network-online.target" ];
       serviceConfig = {
-        ExecStart = "${pkgs.xorg.xorgserver}/bin/Xvfb ${cfg.xvfbDisplay} -screen 0 ${cfg.xvfbResolution} -nolisten tcp";
+        Type = "simple";
+        User = "root";
+        ExecStart = lib.concatStringsSep " " [
+          "${pkgs.xorg.xorgserver}/bin/Xorg"
+          cfg.display
+          "-config /etc/X11/xorg-headless.conf"
+          "-nolisten tcp"
+          "-noreset"
+          "-logfile /var/log/xorg-headless.log"
+        ];
         Restart = "always";
         RestartSec = "5s";
-        User = "btone";
-        Group = "btone";
       };
     };
 
-    # Fetch the non-btone mods (fabric-api, kotlin, meteor, baritone, sodium)
-    # once on first boot. setup-portablemc.sh embeds the same logic; this is a
-    # one-shot Nix-side equivalent so the SKILL only has to scp the btone jar.
+    # Fetch non-btone mods (fabric-api, kotlin, meteor, baritone)
+    # once on first boot. setup-portablemc.sh embeds the same logic; this
+    # is a one-shot Nix-side equivalent so the SKILL only scp's the btone jar.
     systemd.services.btone-mods-bootstrap = {
-      description = "Download Fabric/Meteor/Baritone/Sodium mods if missing";
+      description = "Download Fabric/Meteor/Baritone mods if missing";
       wantedBy = [ "btone-bot.service" ];
       before = [ "btone-bot.service" ];
       after = [ "network-online.target" ];
@@ -165,11 +232,10 @@ in
 
         fetch_modrinth fabric-api
         fetch_modrinth fabric-language-kotlin
-        # Sodium is intentionally OMITTED for the EC2 deploy. On a real
-        # GPU it reduces render-thread saturation, but under Mesa
-        # llvmpipe its advanced shader path segfaults in
-        # lp_rast_shade_tile (libgallium). Vanilla MC's renderer is
-        # slower but stable on software rasterizers.
+        # Sodium intentionally OMITTED for the EC2 deploy: under Mesa
+        # llvmpipe its shader path segfaulted in lp_rast_shade_tile.
+        # We're now on a real Nvidia GPU, but the omission stayed —
+        # vanilla renderer is plenty fast at 6 chunk view distance.
 
         curl -sfL -o "$MODS/meteor-client-$MC.jar" \
           "https://meteorclient.com/api/download?version=$MC"
@@ -180,26 +246,20 @@ in
       '';
     };
 
-    # The bot itself. Refuses to start until the mod jar is in place
-    # (the SKILL has the agent scp it after the first nixos-rebuild).
+    # The bot itself. Refuses to start until the mod jar is in place.
     systemd.services.btone-bot = {
-      description = "btone-mod-c Minecraft bot (headless via Xvfb + llvmpipe)";
-      after = [ "xvfb.service" "btone-mods-bootstrap.service" "network-online.target" ];
-      requires = [ "xvfb.service" ];
+      description = "btone-mod-c Minecraft bot (headless GPU-rendered)";
+      after = [ "xorg-headless.service" "btone-mods-bootstrap.service" "network-online.target" ];
+      requires = [ "xorg-headless.service" ];
       wants = [ "btone-mods-bootstrap.service" "network-online.target" ];
       wantedBy = [ "multi-user.target" ];
 
       environment = {
-        DISPLAY = cfg.xvfbDisplay;
-        LIBGL_ALWAYS_SOFTWARE = "1";
-        # LWJGL3 / MC require GL 3.3 core. llvmpipe supports it but doesn't
-        # always advertise it without this override.
-        MESA_GL_VERSION_OVERRIDE = "3.3";
-        MESA_GLSL_VERSION_OVERRIDE = "330";
-        # llvmpipe JIT-compiles shaders and segfaults in lp_rast_shade_tile
-        # under MC's first frame on Mesa 26. softpipe interprets GLSL
-        # without JIT — much slower but stable. Override at startup.
-        GALLIUM_DRIVER = "softpipe";
+        DISPLAY = cfg.display;
+        # Real GPU, real Nvidia libGL — no Mesa software fallback needed.
+        # Explicitly set 0 in case anything inherits the previous deploy's
+        # LIBGL_ALWAYS_SOFTWARE=1 from a stale /etc/profile.
+        LIBGL_ALWAYS_SOFTWARE = "0";
         JAVA_HOME = "${pkgs.temurin-bin-21}";
       };
 
@@ -207,8 +267,6 @@ in
         User = "btone";
         Group = "btone";
         WorkingDirectory = "/var/lib/btone";
-        # Block the bot from launching with no mod jar — clearer failure than
-        # MC silently starting vanilla and the agent getting RPC timeouts.
         ExecStartPre = "${pkgs.coreutils}/bin/test -f ${cfg.modJarPath}";
         ExecStart = lib.concatStringsSep " " [
           "${pkgs.portablemc}/bin/portablemc"
@@ -226,10 +284,6 @@ in
         StandardError = "journal";
       };
     };
-
-    # NixOS root user gets the operator's SSH key from EC2 metadata
-    # (KeyName parameter on the CloudFormation stack). Nothing else needed —
-    # amazon-image.nix wires up cloud-init for that.
 
     system.stateVersion = "24.11";
   };

@@ -12,16 +12,18 @@ Parameters:
 
   InstanceType:
     Type: String
-    Default: t3.large
+    Default: g4dn.xlarge
     AllowedValues:
-      - t3.large
+      - g4dn.xlarge      # T4 GPU, 4 vCPU, 16 GB — recommended
+      - g4dn.2xlarge     # T4 GPU, 8 vCPU, 32 GB
+      - g6.xlarge        # L4 GPU, 4 vCPU, 16 GB
+      - t3.large         # no GPU — software rendering, may not work for MC 1.21
       - t3.xlarge
-      - c6i.xlarge
-      - c6i.2xlarge
     Description: >
-      MC under llvmpipe is CPU-bound. t3.large gets ~5-10fps which is
-      enough for the bot. Bump to xlarge if you see render-thread
-      saturation in journalctl.
+      MC's renderer needs real GL acceleration. Mesa software paths
+      (llvmpipe, softpipe) crash MC 1.21.8 during the first frame.
+      g4dn.xlarge with the proprietary Nvidia driver is the cheapest
+      reliable option in us-west-2 (~$0.526/hr on-demand).
 
   AllowedSshCidr:
     Type: String
