@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  btone-mod-c headless deployment. Single EC2 instance running NixOS,
+  software-rendered Minecraft client under Xvfb. SSH-only inbound; the
+  RPC bridge stays on 127.0.0.1 and is reached from the operator's
+  laptop via `ssh -L 25591:127.0.0.1:25591`.
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Existing EC2 key pair for SSH access (default user is `root` on NixOS).
+
+  InstanceType:
+    Type: String
+    Default: t3.large
+    AllowedValues:
+      - t3.large
+      - t3.xlarge
+      - c6i.xlarge
+      - c6i.2xlarge
+    Description: >
+      MC under llvmpipe is CPU-bound. t3.large gets ~5-10fps which is
+      enough for the bot. Bump to xlarge if you see render-thread
+      saturation in journalctl.
+
+  AllowedSshCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      CIDR allowed to SSH to the instance. Set to your /32 — e.g.
+      `curl -s ifconfig.me`/32. The bridge port is NOT exposed; only
+      SSH (22) is reachable from the public internet.
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+
+  NixosAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: >
+      Public NixOS x86_64 AMI ID for this region. Look up with
+      `aws ec2 describe-images --owners 427812963091
+        --filters "Name=name,Values=NixOS-24.11*x86_64*"
+        --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text`
+      (run in the region you're deploying into).
+
+  RootVolumeSizeGB:
+    Type: Number
+    Default: 30
+    MinValue: 20
+    Description: gp3 root volume. Need ~10GB for the Nix store + MC assets.
+
+Resources:
+  BtoneSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: btone-mod-c - SSH only, bridge stays on localhost
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+          Description: SSH (operator laptop)
+      Tags:
+        - Key: Name
+          Value: btone-ec2
+
+  BtoneEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: btone-ec2
+
+  BtoneInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref NixosAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !Ref BtoneSg
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref RootVolumeSizeGB
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: btone-ec2
+
+  BtoneEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref BtoneInstance
+      AllocationId: !GetAtt BtoneEip.AllocationId
+
+Outputs:
+  PublicIp:
+    Description: Elastic IP attached to the bot instance
+    Value: !Ref BtoneEip
+
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref BtoneInstance
+
+  SshCommand:
+    Description: One-liner to SSH in (NixOS default user is root, not ec2-user)
+    Value: !Sub "ssh -i ~/.ssh/${KeyName}.pem root@${BtoneEip}"
