@@ -264,8 +264,6 @@ cat >/etc/systemd/system/xauth-share.service <<'EOF'
 [Unit]
 Description=Stamp a shared xauth cookie for streamd to read DISPLAY=:99
 After=xorg-headless.service
-Requires=xorg-headless.service
-BindsTo=xorg-headless.service
 PartOf=xorg-headless.service
 
 [Service]
@@ -281,15 +279,16 @@ ExecStart=/bin/sh -c 'DISPLAY=:99 /usr/bin/xhost +SI:localuser:streamd >/dev/nul
 WantedBy=xorg-headless.service
 EOF
 
-# Stitch xauth-share back together with xorg-headless so a manual
-# `systemctl restart xorg-headless` re-runs xauth-share. PartOf only
-# propagates STOP; we need an ExecStartPost on xorg-headless to actually
-# kick xauth-share back up after Xorg restarts.
-mkdir -p /etc/systemd/system/xorg-headless.service.d
-cat >/etc/systemd/system/xorg-headless.service.d/restart-xauth.conf <<'EOF'
-[Service]
-ExecStartPost=/bin/sh -c 'systemctl is-enabled xauth-share.service >/dev/null 2>&1 && systemctl restart xauth-share.service || true'
-EOF
+# Drop any prior drop-in that ExecStartPost'd xauth-share; the previous
+# attempt deadlocked (Xorg waited for systemctl restart xauth-share to
+# complete, xauth-share BindsTo'd Xorg → never reached active → never
+# returned). Plain After+PartOf+WantedBy is enough for v1: WantedBy
+# pulls xauth-share up when xorg-headless starts at boot, PartOf
+# propagates stop. Manual `systemctl restart xorg-headless` won't
+# auto-restart xauth-share — operator runs both. Documented as a known
+# limit; revisit with a path-trigger if it bites.
+rm -rf /etc/systemd/system/xorg-headless.service.d/restart-xauth.conf
+rmdir /etc/systemd/system/xorg-headless.service.d 2>/dev/null || true
 
 # Daemon owns ffmpeg lifecycle + the unix socket. No env override —
 # STREAM_KEY comes only via EnvironmentFile, which only `streamd` and
