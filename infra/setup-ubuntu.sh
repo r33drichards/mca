@@ -59,6 +59,14 @@ install -d -o btone -g btone -m 0755 "$BTONE_HOME/mods"
 install -d -o btone -g btone -m 0755 "$BTONE_HOME/config"
 usermod -aG audio,video btone
 
+# Allow other users (claudeop) to traverse btone's home dir to reach
+# /var/lib/btone/source (the codebase). 0751 = btone has full rwx,
+# btone group has rx, others have x only — i.e. anyone can `cd` into
+# subpaths but cannot list the directory itself. Inside, files keep
+# their per-file permissions (mode 0644 source files = readable;
+# bridge config keeps the token but claudeop legitimately needs it).
+chmod 0751 "$BTONE_HOME"
+
 # --- 6. options.txt: skip the Welcome/Accessibility dialog ------------------
 # MC 1.21+ shows AccessibilityOnboardingScreen on first launch, blocking
 # --quickPlayMultiplayer until "Continue" is clicked. Pre-seed the option
