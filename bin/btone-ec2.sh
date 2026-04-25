@@ -13,9 +13,6 @@
 #               config so bin/btone-cli works locally.
 #   logs        journalctl -fu btone-bot on the remote.
 #   restart     systemctl restart btone-bot on the remote.
-#   claude      ssh + tmux attach the sandboxed Claude Code session.
-#   claude-send send-keys text into the Claude session (no attach).
-#   claude-peek capture-pane and print the last N lines (default 30).
 #   destroy     aws cloudformation delete-stack.
 #
 # Env / config:
@@ -180,38 +177,6 @@ cmd_tunnel() {
 cmd_logs()    { cmd_ssh -- "sudo journalctl -fu btone-bot"; }
 cmd_restart() { cmd_ssh -- "sudo systemctl restart btone-bot"; }
 
-cmd_claude() {
-  local ip
-  ip=$(resolve_ip)
-  [[ -f "$KEY_FILE" ]] || die "key file not found: $KEY_FILE"
-  exec ssh "${ssh_args[@]}" -t "$SSH_USER@$ip" claude-attach
-}
-
-cmd_claude_send() {
-  # Pipe message through stdin → tmux load-buffer → paste-buffer → Enter.
-  # Avoids shell-quoting layers (local → ssh → sudo → tmux argv) which
-  # would otherwise let $(...) inside a message get evaluated remotely.
-  local ip msg
-  ip=$(resolve_ip)
-  msg="$*"
-  [[ -n "$msg" ]] || die "usage: $0 claude-send <text>"
-  printf '%s' "$msg" | ssh "${ssh_args[@]}" "$SSH_USER@$ip" "
-    sudo -u claudeop /usr/bin/tmux -L claude load-buffer - &&
-    sudo -u claudeop /usr/bin/tmux -L claude paste-buffer -t claude:0 -d &&
-    sudo -u claudeop /usr/bin/tmux -L claude send-keys -t claude:0 Enter
-  "
-}
-
-cmd_claude_peek() {
-  local ip n
-  ip=$(resolve_ip)
-  n="${1:-30}"
-  [[ "$n" =~ ^[0-9]+$ ]] || die "claude-peek expects a numeric line count, got: $n"
-  ssh "${ssh_args[@]}" "$SSH_USER@$ip" \
-    "sudo -u claudeop /usr/bin/tmux -L claude capture-pane -t claude:0 -p" \
-    | tail -n "$n"
-}
-
 cmd_destroy() {
   log "deleting stack $STACK_NAME in $AWS_REGION"
   aws cloudformation delete-stack --region "$AWS_REGION" --stack-name "$STACK_NAME"
@@ -237,9 +202,6 @@ case "$cmd" in
   tunnel)     cmd_tunnel "$@" ;;
   logs)       cmd_logs "$@" ;;
   restart)    cmd_restart "$@" ;;
-  claude)     cmd_claude "$@" ;;
-  claude-send) cmd_claude_send "$@" ;;
-  claude-peek) cmd_claude_peek "$@" ;;
   destroy)    cmd_destroy "$@" ;;
   -h|--help)  usage ;;
   *)          die "unknown subcommand: $cmd (try: $0 --help)" ;;
