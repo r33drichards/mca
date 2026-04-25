@@ -2,6 +2,40 @@
 
 let
   cfg = config.services.btone;
+
+  # Build the mod jar on the instance. Fabric Loom needs network access,
+  # so this derivation opts out of the sandbox via `__noChroot = true` —
+  # which only works when nix.settings.sandbox = "relaxed" (set below).
+  btone-mod-c = pkgs.stdenv.mkDerivation {
+    pname = "btone-mod-c";
+    version = "0.1.0";
+    src = ../mod-c;
+
+    __noChroot = true;
+
+    nativeBuildInputs = [ pkgs.temurin-bin-21 pkgs.gradle_8 ];
+
+    JAVA_HOME = "${pkgs.temurin-bin-21}";
+
+    buildPhase = ''
+      runHook preBuild
+      export GRADLE_USER_HOME=$TMPDIR/gradle-home
+      gradle \
+        --no-daemon \
+        --no-watch-fs \
+        --console=plain \
+        --gradle-user-home "$GRADLE_USER_HOME" \
+        build
+      runHook postBuild
+    '';
+
+    installPhase = ''
+      runHook preInstall
+      mkdir -p $out
+      cp build/libs/btone-mod-c-0.1.0.jar $out/
+      runHook postInstall
+    '';
+  };
 in
 {
   imports = [
@@ -35,10 +69,12 @@ in
 
     modJarPath = lib.mkOption {
       type = lib.types.path;
-      default = "/var/lib/btone/mods/btone-mod-c-0.1.0.jar";
+      default = "${btone-mod-c}/btone-mod-c-0.1.0.jar";
       description = ''
-        Where the btone-mod-c jar must live before btone-bot.service can
-        start. The skill's `bin/btone-ec2.sh push` step `scp`s it here.
+        Path to the btone-mod-c jar. By default it's built from
+        `../mod-c` as a Nix derivation during nixos-rebuild — no scp
+        needed. Override only if you want to substitute a hand-built
+        jar.
       '';
     };
 
@@ -70,6 +106,9 @@ in
 
     nix.settings = {
       experimental-features = [ "nix-command" "flakes" ];
+      # Allow `__noChroot = true` derivations (used by btone-mod-c
+      # because Fabric Loom needs network for mappings/MC jars).
+      sandbox = "relaxed";
       # cuda-maintainers prebuilds the proprietary nvidia driver against
       # the standard nixpkgs kernels, so we don't have to compile a
       # ~500MB kernel module on every fresh deploy.

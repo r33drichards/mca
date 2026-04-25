@@ -29,7 +29,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 STACK_NAME="${STACK_NAME:-btone-ec2}"
-INSTANCE_TYPE="${INSTANCE_TYPE:-t3.large}"
+INSTANCE_TYPE="${INSTANCE_TYPE:-g4dn.xlarge}"
 KEY_NAME="${KEY_NAME:-}"
 KEY_FILE="${KEY_FILE:-${HOME}/.ssh/${KEY_NAME}.pem}"
 BRIDGE_PORT="${BRIDGE_PORT:-25591}"
@@ -78,7 +78,7 @@ cmd_provision() {
   [[ -n "$ami" && "$ami" != "None" ]] || die "no NixOS AMI found in $AWS_REGION"
   log "AMI: $ami"
 
-  my_ip=$(curl -s ifconfig.me || true)
+  my_ip=$(curl -s4 https://api.ipify.org || true)
   cidr="${ALLOWED_SSH_CIDR:-${my_ip:+${my_ip}/32}}"
   [[ -n "$cidr" ]] || die "could not determine your IP; set ALLOWED_SSH_CIDR=x.x.x.x/32"
   log "SSH CIDR: $cidr"
@@ -107,29 +107,40 @@ cmd_ssh() {
 }
 
 cmd_push() {
-  local ip jar
+  local ip repo_url
   ip=$(resolve_ip)
-  jar=$(ls -t "$REPO_ROOT"/mod-c/build/libs/btone-mod-c-*.jar 2>/dev/null | head -n1)
-  [[ -n "$jar" ]] || die "no mod jar built — run: cd mod-c && nix develop .. --command ./gradlew build"
-  log "syncing flake to /etc/nixos/btone"
-  ssh -i "$KEY_FILE" "root@$ip" "mkdir -p /etc/nixos/btone /var/lib/btone/mods"
-  rsync -a -e "ssh -i $KEY_FILE" \
-    "$REPO_ROOT/flake.nix" "$REPO_ROOT/flake.lock" \
-    "$REPO_ROOT/infra/" \
-    "root@$ip:/etc/nixos/btone/"
-  # The flake expects ./infra/nixos.nix. rsync of infra/ flattens into
-  # /etc/nixos/btone/, so move the file into the path the flake imports.
+
+  # The mod jar is now BUILT on the instance as part of nixos-rebuild
+  # (flake's packages.btone-mod-c derivation). No local gradle build,
+  # no scp. The git-clone step is the only push artifact.
+  repo_url=$(git -C "$REPO_ROOT" config --get remote.origin.url)
+  [[ -n "$repo_url" ]] || die "no git remote.origin.url — set one or use a different push mechanism"
+  # Refuse to deploy with uncommitted changes to anything that ships
+  # (flake.nix, infra/nixos.nix, mod-c/) — git pull can't see them.
+  if ! git -C "$REPO_ROOT" diff --quiet HEAD -- flake.nix infra/nixos.nix mod-c/ 2>/dev/null; then
+    die "uncommitted changes to flake.nix, infra/nixos.nix, or mod-c/ — commit + push first"
+  fi
+  local sha
+  sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  log "deploying $repo_url @ $sha"
+
+  # Stock NixOS AMI has no git pre-installed; nix-shell -p git is the
+  # one-shot escape hatch that works even before flakes are enabled.
   ssh -i "$KEY_FILE" "root@$ip" "
     set -e
-    mkdir -p /etc/nixos/btone/infra
-    [ -f /etc/nixos/btone/nixos.nix ] && mv /etc/nixos/btone/nixos.nix /etc/nixos/btone/infra/nixos.nix
-    [ -f /etc/nixos/btone/btone-ec2.yaml ] && mv /etc/nixos/btone/btone-ec2.yaml /etc/nixos/btone/infra/btone-ec2.yaml
-    true
+    mkdir -p /var/lib/btone/mods
+    nix-shell -p git --run '
+      set -e
+      if [ -d /etc/nixos/btone/.git ]; then
+        git -C /etc/nixos/btone fetch origin
+        git -C /etc/nixos/btone reset --hard $sha
+      else
+        rm -rf /etc/nixos/btone
+        git clone $repo_url /etc/nixos/btone
+        git -C /etc/nixos/btone reset --hard $sha
+      fi
+    '
   "
-  log "uploading mod jar: $(basename "$jar")"
-  scp -i "$KEY_FILE" "$jar" "root@$ip:/var/lib/btone/mods/btone-mod-c-0.1.0.jar"
-  # btone user only exists after the first nixos-rebuild — best-effort chown.
-  # The rebuild step does it again unconditionally once the user is created.
   ssh -i "$KEY_FILE" "root@$ip" "chown -R btone:btone /var/lib/btone 2>/dev/null || true"
 }
 
