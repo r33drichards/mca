@@ -7,6 +7,9 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
@@ -36,7 +39,24 @@ public final class BtoneHttpServer {
     }
 
     public int actualPort() { return server.getAddress().getPort(); }
-    public void start() { server.setExecutor(null); server.start(); }
+    public void start() {
+        // A cached pool is critical: SSE handlers block in Thread.sleep
+        // for keepalives, so each open SSE stream pins a thread. The default
+        // null executor only fires up a small handful of threads and starves
+        // out concurrent RPC calls (rpc.discover etc) once a couple of SSE
+        // consumers attach. Cached pool lets each SSE stream and each RPC
+        // request live on its own thread.
+        server.setExecutor(Executors.newCachedThreadPool(new ThreadFactory() {
+            private final AtomicInteger n = new AtomicInteger();
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread t = new Thread(r, "btone-http-" + n.incrementAndGet());
+                t.setDaemon(true);
+                return t;
+            }
+        }));
+        server.start();
+    }
     public void stop() { server.stop(0); }
 
     public static void write(HttpExchange ex, int code, String body) {

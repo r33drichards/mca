@@ -33,9 +33,14 @@ public final class SseEndpoint {
         });
         try {
             // Heartbeat keeps proxies from idle-timing the connection and lets us
-            // detect a dropped client (write throws IOException).
+            // detect a dropped client (write throws IOException). Short interval
+            // matters: each open stream pins a handler thread, and a dead client
+            // doesn't release that thread until the next failed write. With
+            // multiple SSE consumers (mc-bridge, mcp-v8 sub-server) this is the
+            // difference between freeing a stale slot in 5 seconds vs 30, and
+            // the http server has bounded concurrency.
             while (true) {
-                Thread.sleep(30_000);
+                Thread.sleep(5_000);
                 out.write(": keepalive\n\n".getBytes());
                 out.flush();
             }
